@@ -473,14 +473,14 @@ export class CharacterGearSet {
         this._dirtyComp = false;
         // Add BLU weapon damage modifier
         combinedStats.wdMag += classJob === "BLU" ? bluWdfromInt(gearIntStat) : 0;
-        const computedStats = finalizeStats(combinedStats, this._food?.bonuses ?? {}, level, levelStats, classJob, classJobStats, this._sheet.partyBonus);
+        const computedStats = finalizeStats(combinedStats, this._food?.bonuses ?? {}, level, levelStats, classJob, classJobStats, this._sheet.partyBonus, this._sheet.race);
         const leftRing = this.getItemInSlot('RingLeft');
         const rightRing = this.getItemInSlot('RingRight');
         if (leftRing && leftRing.isUnique && rightRing && rightRing.isUnique) {
             if (leftRing.id === rightRing.id) {
                 issues.push({
                     severity: 'error',
-                    description: `You cannot equip ${leftRing.name} in both ring slots because it is a unique item.`,
+                    description: `You cannot equip ${leftRing.nameTranslation} in both ring slots because it is a unique item.`,
                 });
             }
         }
@@ -495,7 +495,6 @@ export class CharacterGearSet {
             computedStats: computedStats,
             issues: this.isSeparator ? [] : issues,
         };
-        //console.info("Recomputed stats", this._lastResult);
         return this._lastResult;
     }
 
