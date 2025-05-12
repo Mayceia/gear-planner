@@ -24,27 +24,91 @@ export type AstExtraData = {
 }
 
 const filler: AstGcdAbility = {
-    id: 25871,
+    id: 3596,
     type: 'gcd',
-    name: "Fall Malefic",
-    potency: 270,
+    name: "Malefic",
+    potency: 150,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
+    levelModifiers: [
+        {
+            minLevel: 54,
+            potency: 160,
+            name: "Malefic II",
+            id: 3598,
+        },
+        {
+            minLevel: 64,
+            potency: 190,
+            name: "Malefic III",
+            id: 7442,
+        },
+        {
+            minLevel: 72,
+            potency: 230,
+            name: "Malefic IV",
+            id: 16555,
+        },
+        {
+            minLevel: 82,
+            potency: 250,
+            name: "Fall Malefic",
+            id: 25871,
+        },
+        {
+            minLevel: 94,
+            potency: 270,
+            name: "Fall Malefic",
+            id: 25871,
+        },
+    ],
 };
 
 const combust: AstGcdAbility = {
-    id: 16554,
+    id: 3599,
     type: 'gcd',
-    name: "Combust III",
+    name: "Combust",
     potency: 0,
     dot: {
-        id: 2041,
-        tickPotency: 70,
+        id: 838,
+        tickPotency: 50,
         duration: 30,
     },
     attackType: "Spell",
     gcd: 2.5,
+    levelModifiers: [
+        {
+            minLevel: 26,
+            name: "Combust II",
+            id: 3608,
+            dot: {
+                id: 843,
+                tickPotency: 60,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 72,
+            name: "Combust III",
+            id: 16554,
+            dot: {
+                id: 1881,
+                tickPotency: 65,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 94,
+            name: "Combust III",
+            id: 16554,
+            dot: {
+                id: 1881,
+                tickPotency: 70,
+                duration: 30,
+            },
+        },
+    ],
 };
 
 const star: AstOgcdAbility = {
@@ -80,12 +144,18 @@ const div: AstOgcdAbility = {
     type: 'ogcd',
     name: "Divination",
     id: 16552,
-    activatesBuffs: [Divination, Divining],
+    activatesBuffs: [Divination],
     potency: null,
     attackType: "Ability",
     cooldown: {
         time: 120,
     },
+    levelModifiers:[
+        {
+            minLevel: 92,
+            activatesBuffs: [Divination, Divining],
+        },
+    ],
 };
 
 const oracle: AstOgcdAbility = {
@@ -248,7 +318,7 @@ export interface AstSettingsExternal extends ExternalCycleSettings<AstSettings> 
 
 }
 
-export const astNewSheetSpec: SimSpec<AstSim, AstSettingsExternal> = {
+export const astCycleSpec: SimSpec<AstSim, AstSettingsExternal> = {
     displayName: "AST Sim",
     loadSavedSimInstance(exported: AstSettingsExternal) {
         return new AstSim(exported);
@@ -256,7 +326,7 @@ export const astNewSheetSpec: SimSpec<AstSim, AstSettingsExternal> = {
     makeNewSimInstance(): AstSim {
         return new AstSim();
     },
-    stub: "ast-sheet-sim",
+    stub: "ast-sim",
     supportedJobs: ['AST'],
     isDefaultSim: true,
 };
@@ -348,8 +418,10 @@ class AstCycleProcessor extends CycleProcessor {
 
         this.useDotIfWorth();
         this.use(spear);
-        this.use(oracle);
-        //oracleReady = false;
+        if (this.stats.level >= 92) {
+            this.use(oracle);
+            //oracleReady = false;
+        }
 
         this.useDotIfWorth();
         this.useOgcd(star);
@@ -364,9 +436,9 @@ export class AstSim extends BaseMultiCycleSim<AstSimResult, AstSettings, AstCycl
         };
     };
 
-    spec = astNewSheetSpec;
-    displayName = astNewSheetSpec.displayName;
-    shortName = "ast-sheet-sim";
+    spec = astCycleSpec;
+    displayName = astCycleSpec.displayName;
+    shortName = "ast-sim";
     manuallyActivatedBuffs = [Divination];
 
     constructor(settings?: AstSettingsExternal) {

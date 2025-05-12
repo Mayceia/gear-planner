@@ -256,8 +256,6 @@ export type DamagingAbility = Readonly<{
     attackType: AttackType,
     autoCrit?: boolean,
     autoDh?: boolean,
-    dot?: DotInfo,
-    alternativeScalings?: AlternativeScaling[],
 }>;
 
 /**
@@ -347,11 +345,7 @@ export type BaseAbility = Readonly<{
      * the highest `minLevel` specified.
      */
     levelModifiers?: LevelModifier[],
-    /**
-     * If the ability uses alternate scalings, such as Living Shadow Strength
-     * scaling or using the pet action Weapon Damage multiplier.
-     */
-    alternativeScalings?: AlternativeScaling[],
+    dot?: DotInfo,
 } & (NonDamagingAbility | DamagingAbility)>;
 
 

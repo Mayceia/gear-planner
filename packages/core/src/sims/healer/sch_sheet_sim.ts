@@ -1,9 +1,10 @@
-import {Chain} from "@xivgear/core/sims/buffs";
-import {Ability, BuffController, GcdAbility, OgcdAbility, PersonalBuff, SimSettings, SimSpec} from "@xivgear/core/sims/sim_types";
-import {CycleProcessor, CycleSimResult, ExternalCycleSettings, MultiCycleSettings, Rotation, PreDmgAbilityUseRecordUnf, AbilityUseResult} from "@xivgear/core/sims/cycle_sim";
-import {rangeInc} from "@xivgear/util/array_utils";
+import { Chain } from "@xivgear/core/sims/buffs";
+import { Ability, GcdAbility, OgcdAbility, PersonalBuff, SimSettings, SimSpec } from "@xivgear/core/sims/sim_types";
+import { CycleProcessor, CycleSimResult, ExternalCycleSettings, MultiCycleSettings, Rotation, PreDmgAbilityUseRecordUnf, AbilityUseResult } from "@xivgear/core/sims/cycle_sim";
+import { rangeInc } from "@xivgear/util/array_utils";
 //import {potionMaxMind} from "@xivgear/core/sims/common/potion";
-import {BaseMultiCycleSim} from "@xivgear/core/sims/processors/sim_processors";
+import { BaseMultiCycleSim } from "@xivgear/core/sims/processors/sim_processors";
+import { removeSelf } from "../common/utils";
 
 type SchAbility = Ability & Readonly<{
     /** Run if an ability needs to update the aetherflow gauge */
@@ -25,12 +26,44 @@ export type SchExtraData = {
 
 const filler: SchGcdAbility = {
     type: 'gcd',
-    name: "Broil IV",
-    id: 25865,
-    potency: 310,
+    name: "Ruin",
+    id: 17869,
+    potency: 150,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
+    levelModifiers: [
+        {
+            minLevel: 54,
+            potency: 220,
+            name: "Broil",
+            id: 3584,
+        },
+        {
+            minLevel: 64,
+            potency: 240,
+            name: "Broil II",
+            id: 7435,
+        },
+        {
+            minLevel: 72,
+            potency: 255,
+            name: "Broil III",
+            id: 16541,
+        },
+        {
+            minLevel: 82,
+            potency: 295,
+            name: "Broil IV",
+            id: 25865,
+        },
+        {
+            minLevel: 94,
+            potency: 310,
+            name: "Broil IV",
+            id: 25865,
+        },
+    ],
 };
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -38,23 +71,73 @@ const r2: SchGcdAbility = {
     type: 'gcd',
     name: "Ruin II",
     id: 17870,
-    potency: 220,
+    potency: 140,
     attackType: "Spell",
     gcd: 2.5,
+    levelModifiers: [
+        {
+            minLevel: 54,
+            potency: 160,
+        },
+        {
+            minLevel: 64,
+            potency: 180,
+        },
+        {
+            minLevel: 72,
+            potency: 200,
+        },
+        {
+            minLevel: 82,
+            potency: 220,
+        },
+    ],
 };
 
 const bio: SchGcdAbility = {
     type: 'gcd',
-    name: "Biolysis",
-    id: 16540,
+    name: "Bio",
+    id: 17864,
     potency: 0,
     dot: {
         duration: 30,
-        tickPotency: 80,
-        id: 3089,
+        tickPotency: 20,
+        id: 179,
     },
     attackType: "Spell",
     gcd: 2.5,
+    levelModifiers: [
+        {
+            minLevel: 26,
+            name: "Bio II",
+            id: 17865,
+            dot: {
+                id: 189,
+                tickPotency: 40,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 72,
+            name: "Biolysis",
+            id: 16540,
+            dot: {
+                id: 1895,
+                tickPotency: 70,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 94,
+            name: "Biolysis",
+            id: 16540,
+            dot: {
+                id: 1895,
+                tickPotency: 80,
+                duration: 30,
+            },
+        },
+    ],
 };
 
 export const ImpactImminent: PersonalBuff = {
@@ -67,24 +150,25 @@ export const ImpactImminent: PersonalBuff = {
     },
     statusId: 3882,
     appliesTo: ability => ability.id === baneful.id,
-    beforeSnapshot<X extends Ability>(buffController: BuffController, ability: X): X {
-        buffController.removeSelf();
-        return {
-            ...ability,
-        };
-    },
+    beforeSnapshot: removeSelf,
 };
 
 const chain: SchOgcdAbility = {
     type: 'ogcd',
     name: "Chain Strategem",
     id: 7436,
-    activatesBuffs: [Chain, ImpactImminent],
-    potency: null,
+    activatesBuffs: [Chain],
+    potency: 0,
     attackType: "Ability",
     cooldown: {
         time: 120,
     },
+    levelModifiers:[
+        {
+            minLevel: 92,
+            activatesBuffs: [Chain, ImpactImminent],
+        },
+    ],
 };
 
 const baneful: SchOgcdAbility = {
@@ -166,7 +250,7 @@ export interface SchSettings extends SimSettings {
 export interface SchSettingsExternal extends ExternalCycleSettings<SchSettings> {
 }
 
-export const schNewSheetSpec: SimSpec<SchSim, SchSettingsExternal> = {
+export const schCycleSpec: SimSpec<SchSim, SchSettingsExternal> = {
     displayName: "SCH Sim",
     loadSavedSimInstance(exported: SchSettingsExternal) {
         return new SchSim(exported);
@@ -174,7 +258,7 @@ export const schNewSheetSpec: SimSpec<SchSim, SchSettingsExternal> = {
     makeNewSimInstance(): SchSim {
         return new SchSim();
     },
-    stub: "sch-sheet-sim",
+    stub: "sch-sim",
     supportedJobs: ['SCH'],
     isDefaultSim: true,
 };
@@ -224,45 +308,46 @@ class ScholarCycleProcessor extends CycleProcessor {
     }
 
     spendEDs() {
-        this.useDotIfWorth();
         if (this.numED >= 1) {
+            this.useDotIfWorth();
             this.use(ed);
-        }
-        this.useDotIfWorth();
-        if (this.numED >= 2) {
-            this.use(ed);
-        }
-        this.useDotIfWorth();
-        if (this.numED >= 3) {
-            this.use(ed);
+            if (this.numED >= 2) {
+                this.useDotIfWorth();
+                this.use(ed);
+                if (this.numED >= 3) {
+                    this.useDotIfWorth();
+                    this.use(ed);
+                }
+            }
         }
     }
 
     useTwoMinBurst() {
         this.useDotIfWorth();
         this.use(chain);
-        let banefulReady = true;
-        if (this.remainingTime < 30) { //rush baneful if there's not enough time for it to tick
-            this.use(filler);
+        if (this.remainingTime < 30 && this.isBanefulReady()) { //rush baneful if there's not enough time for it to tick
+            this.useDotIfWorth();
             this.use(baneful);
-            banefulReady = false;
         }
         this.spendEDs();
         this.useDotIfWorth();
         this.use(aetherflow);
-        if (banefulReady) { //if baneful was not rushed
+        if (this.isBanefulReady()) { //if baneful was not rushed
             this.useDotIfWorth();
             this.use(baneful);
-            banefulReady = false;
         }
         this.spendEDs();
+    }
+
+    isBanefulReady(): boolean{
+        return this.getActiveBuffData(ImpactImminent, this.currentTime)?.buff?.duration > 0;
     }
 }
 
 export class SchSim extends BaseMultiCycleSim<SchSimResult, SchSettings, ScholarCycleProcessor> {
 
-    spec = schNewSheetSpec;
-    displayName = schNewSheetSpec.displayName;
+    spec = schCycleSpec;
+    displayName = schCycleSpec.displayName;
     shortName = "sch-sheet-sim";
     manuallyActivatedBuffs = [Chain];
 

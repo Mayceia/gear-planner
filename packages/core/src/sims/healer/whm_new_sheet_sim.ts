@@ -24,27 +24,100 @@ export type WhmExtraData = {
 }
 
 const filler: WhmGcdAbility = {
-    id: 25859,
+    id: 119,
     type: 'gcd',
-    name: "Glare III",
-    potency: 340,
+    name: "Stone",
+    potency: 140,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
+    levelModifiers: [
+        {
+            minLevel: 18,
+            potency: 190,
+            name: "Stone II",
+            id: 127,
+        },
+        {
+            minLevel: 54,
+            potency: 220,
+            name: "Stone III",
+            id: 3568,
+        },
+        {
+            minLevel: 64,
+            potency: 260,
+            name: "Stone IV",
+            id: 7431,
+        },
+        {
+            minLevel: 72,
+            potency: 290,
+            name: "Glare",
+            id: 16533,
+        },
+        {
+            minLevel: 82,
+            potency: 310,
+            name: "Glare III",
+            id: 25859,
+        },
+        {
+            minLevel: 94,
+            potency: 340,
+            name: "Glare III",
+            id: 25859,
+        },
+    ],
 };
 
 const dia: WhmGcdAbility = {
-    id: 16532,
+    id: 121,
     type: 'gcd',
-    name: "Dia",
-    potency: 80,
+    name: "Aero",
+    potency: 50,
     dot: {
-        id: 1871,
-        tickPotency: 80,
+        id: 143,
+        tickPotency: 30,
         duration: 30,
     },
     attackType: "Spell",
     gcd: 2.5,
+    levelModifiers: [
+        {
+            minLevel: 46,
+            potency: 50,
+            name: "Aero II",
+            id: 132,
+            dot: {
+                id: 144,
+                tickPotency: 50,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 72,
+            potency: 65,
+            name: "Dia",
+            id: 16532,
+            dot: {
+                id: 1871,
+                tickPotency: 65,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 94,
+            potency: 80,
+            name: "Dia",
+            id: 16532,
+            dot: {
+                id: 1871,
+                tickPotency: 80,
+                duration: 30,
+            },
+        },
+    ],
 };
 
 const assize: WhmOgcdAbility = {
@@ -77,27 +150,32 @@ export const SacredSight: PersonalBuff = {
     },
 };
 
+const PomBuff: PersonalBuff = {
+    name: "Presence of Mind",
+    selfOnly: true,
+    duration: 15,
+    effects: {
+        haste: 20,
+    },
+    statusId: 157,
+};
+
 const pom: WhmOgcdAbility = {
     id: 136,
     type: 'ogcd',
     name: 'Presence of Mind',
     potency: null,
-    activatesBuffs: [
-        {
-            name: "Presence of Mind",
-            selfOnly: true,
-            duration: 15,
-            effects: {
-                haste: 20,
-            },
-            statusId: 157,
-        },
-        SacredSight,
-    ],
+    activatesBuffs: [PomBuff],
     attackType: "Ability",
     cooldown: {
         time: 120,
     },
+    levelModifiers:[
+        {
+            minLevel: 92,
+            activatesBuffs: [PomBuff, SacredSight],
+        },
+    ],
 };
 
 const lily: WhmGcdAbility = {
@@ -117,10 +195,16 @@ const misery: WhmGcdAbility = {
     id: 16535,
     type: 'gcd',
     name: "Afflatus Misery",
-    potency: 1360,
+    potency: 1240,
     attackType: "Spell",
     gcd: 2.5,
     updateGauge: gauge => gauge.redLilies -= 3,
+    levelModifiers: [
+        {
+            minLevel: 94,
+            potency: 1360,
+        },
+    ],
 };
 
 const glare4: WhmGcdAbility = {
@@ -176,7 +260,7 @@ export interface WhmSettingsExternal extends ExternalCycleSettings<WhmSettings> 
 
 }
 
-export const whmNewSheetSpec: SimSpec<WhmSim, WhmSettingsExternal> = {
+export const whmCycleSpec: SimSpec<WhmSim, WhmSettingsExternal> = {
     displayName: "WHM New Sim",
     loadSavedSimInstance(exported: WhmSettingsExternal) {
         return new WhmSim(exported);
@@ -184,7 +268,7 @@ export const whmNewSheetSpec: SimSpec<WhmSim, WhmSettingsExternal> = {
     makeNewSimInstance(): WhmSim {
         return new WhmSim();
     },
-    stub: "whm-new-sheet-sim",
+    stub: "whm-new-sim",
     supportedJobs: ['WHM'],
     isDefaultSim: true,
 };
@@ -237,7 +321,7 @@ class WhmCycleProcessor extends CycleProcessor {
         else if (this.gauge.redLilies === 3){
             this.useGcd(misery);
         }
-        else if (this.sacredSight > 0) {
+        else if (this.isSacredSightActive) {
             this.useGcd(glare4);
             this.sacredSight -= 1;
         }
@@ -255,7 +339,7 @@ class WhmCycleProcessor extends CycleProcessor {
             || (this.gauge.redLilies === 3 && this.remainingTime < 5)) { //or use misery if the fight will end now
             this.useGcd(misery);
         }
-        else if (this.gauge.redLilies < 3 && this.gauge.blueLilies > 0 && this.totalTime > this.nextMiseryTime + 7) {
+        else if (this.gauge.redLilies < 3 && this.gauge.blueLilies > 0 && this.totalTime > this.nextMiseryTime + 7 && this.stats.level >= 74) {
             this.useGcd(lily);
             if (this.gauge.redLilies === 3) {
                 this.nextMiseryTime += 60;
@@ -268,13 +352,16 @@ class WhmCycleProcessor extends CycleProcessor {
 
     useTwoMinBurst() {
         this.use(pom);
-        this.sacredSight = 3;
         for (let i = 0; i < 12; i++){
             this.buffedGcd();
             if (this.isReady(assize)) {
                 this.use(assize);
             }
         }
+    }
+
+    isSacredSightActive(): boolean{
+        return this.getActiveBuffData(SacredSight, this.currentTime)?.buff?.duration > 0;
     }
 }
 
@@ -286,9 +373,9 @@ export class WhmSim extends BaseMultiCycleSim<WhmSimResult, WhmSettings, WhmCycl
         };
     }
 
-    spec = whmNewSheetSpec;
-    displayName = whmNewSheetSpec.displayName;
-    shortName = "whm-new-sheet-sim";
+    spec = whmCycleSpec;
+    displayName = whmCycleSpec.displayName;
+    shortName = "whm-sim";
 
     constructor(settings?: WhmSettingsExternal) {
         super('WHM', settings);

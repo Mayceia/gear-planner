@@ -22,38 +22,134 @@ const filler: GcdAbility = {
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
-    id: 24312,
+    id: 24283,
+    levelModifiers: [
+        {
+            minLevel: 54,
+            potency: 250,
+        },
+        {
+            minLevel: 64,
+            potency: 300,
+        },
+        {
+            minLevel: 72,
+            potency: 320,
+            name: "Dosis II",
+            id: 24306,
+        },
+        {
+            minLevel: 82,
+            potency: 330,
+            name: "Dosis III",
+            id: 24312,
+        },
+        {
+            minLevel: 94,
+            potency: 370,
+            name: "Dosis III",
+            id: 24312,
+        },
+    ],
+};
+
+const eukrasia: GcdAbility = {
+    type: 'gcd',
+    name: 'Eukrasia',
+    potency: null,
+    attackType: "Spell",
+    fixedGcd: true,
+    gcd: 1.0,
+    id: 24290,
 };
 
 const eDosis: GcdAbility = {
     type: 'gcd',
-    name: "Eukrasian Dosis III",
+    name: "Eukrasian Dosis",
     potency: 0,
     dot: {
-        id: 2864,
+        id: 2614,
         duration: 30,
-        tickPotency: 80,
+        tickPotency: 30,
     },
     attackType: "Spell",
     fixedGcd: true,
-    gcd: 2.5,
-    // TODO: can this be modeled in a more accurate way? it doesn't break anything but isn't nice to work with
-    cast: 1.5,
-    id: 24314,
+    gcd: 1.5,
+    id: 24293,
+    levelModifiers: [
+        {
+            minLevel: 54,
+            dot: {
+                id: 2614,
+                tickPotency: 35,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 64,
+            dot: {
+                id: 2614,
+                tickPotency: 40,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 72,
+            name: "Eukrasian Dosis II",
+            id: 24308,
+            dot: {
+                id: 2615,
+                tickPotency: 60,
+                duration: 30,
+            },
+        },
+        {
+            minLevel: 82,
+            name: "Eukrasian Dosis III",
+            id: 24314,
+            dot: {
+                id: 2616,
+                tickPotency: 80,
+                duration: 30,
+            },
+        },
+    ],
 };
 
 const phlegma: GcdAbility = {
     type: 'gcd',
     name: "Phlegma",
-    potency: 600,
+    potency: 230,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
-    id: 24313,
+    id: 24289,
     cooldown: {
         time: 40.0,
         charges: 2,
     },
+    levelModifiers: [
+        {
+            minLevel: 54,
+            potency: 330,
+        },
+        {
+            minLevel: 64,
+            potency: 400,
+        },
+        {
+            minLevel: 72,
+            potency: 490,
+            name: "Phlegma II",
+            id: 24307,
+        },
+        {
+            minLevel: 82,
+            potency: 600,
+            name: "Phlegma III",
+            id: 24313,
+        },
+    ],
 };
 
 const psyche: OgcdAbility = {
@@ -108,6 +204,7 @@ class SageCycleProcessor extends CycleProcessor {
 
     useDotIfWorth() {
         if (this.remainingTime > 15) {
+            this.use(eukrasia);
             this.use(eDosis);
         }
         else {
