@@ -56,15 +56,17 @@ export const STANDARD_APPLICATION_DELAY = 0.6;
 // TODO: find actual value
 export const AUTOATTACK_APPLICATION_DELAY = 0.6;
 
+export const ALL_COMBAT_JOBS = [
+    'WHM', 'SGE', 'SCH', 'AST',
+    'PLD', 'WAR', 'DRK', 'GNB',
+    'DRG', 'MNK', 'NIN', 'SAM', 'RPR', 'VPR',
+    'BRD', 'MCH', 'DNC',
+    'BLM', 'SMN', 'RDM', 'BLU', 'PCT',
+] as const;
 /**
  * Supported Jobs.
  */
-export type JobName
-    = 'WHM' | 'SGE' | 'SCH' | 'AST'
-    | 'PLD' | 'WAR' | 'DRK' | 'GNB'
-    | 'DRG' | 'MNK' | 'NIN' | 'SAM' | 'RPR' | 'VPR'
-    | 'BRD' | 'MCH' | 'DNC'
-    | 'BLM' | 'SMN' | 'RDM' | 'BLU' | 'PCT';
+export type JobName = typeof ALL_COMBAT_JOBS[number];
 
 /**
  * All clans/races.
@@ -121,7 +123,6 @@ const STANDARD_TANK: JobDataConst = {
     mainStat: 'strength',
     autoAttackStat: 'strength',
     irrelevantSubstats: ['spellspeed', 'piety'],
-    // traitMulti: TODO: Tank Mastery?
     aaPotency: MELEE_AUTO_POTENCY,
     excludedRelicSubstats: ['dhit'],
     maxLevel: CURRENT_MAX_LEVEL,
@@ -247,8 +248,8 @@ export const JOB_DATA: Record<JobName, JobDataConst> = {
                 apply: (stats) => {
                     stats.bonusHaste.push(attackType =>
                         attackType === 'Weaponskill'
-                    || attackType === 'Spell'
-                    || attackType === 'Auto-attack'
+                        || attackType === 'Spell'
+                        || attackType === 'Auto-attack'
                             ? 20 : 0);
                 },
             }],
@@ -334,6 +335,30 @@ export const JOB_DATA: Record<JobName, JobDataConst> = {
     PCT: STANDARD_CASTER,
 };
 
+export const JOB_IDS: Record<JobName, number> = {
+    PLD: 19,
+    MNK: 20,
+    WAR: 21,
+    DRG: 22,
+    BRD: 23,
+    WHM: 24,
+    BLM: 25,
+    SMN: 27,
+    SCH: 28,
+    NIN: 30,
+    MCH: 31,
+    DRK: 32,
+    AST: 33,
+    SAM: 34,
+    RDM: 35,
+    BLU: 36,
+    GNB: 37,
+    DNC: 38,
+    RPR: 39,
+    SGE: 40,
+    VPR: 41,
+    PCT: 42,
+};
 
 /**
  * Clan/race-specific stats
@@ -511,7 +536,7 @@ export const LEVEL_STATS: Record<SupportedLevel, LevelStats> = {
     // DAWNTRAIL TODO: replace with real values once known
     100: {
         level: 100,
-        // Tentative guess
+        // Verified
         baseMainStat: 440,
         // Updated
         baseSubStat: 420,
@@ -532,6 +557,13 @@ export const LEVEL_STATS: Record<SupportedLevel, LevelStats> = {
     },
 };
 
+const defaultItemDispBase = {
+    showNq: false,
+    higherRelics: true,
+    minILvlFood: 740,
+    maxILvlFood: 999,
+} as const satisfies Partial<ItemDisplaySettings>;
+
 /**
  * Numbers governing the minimum/maximum item levels to request from xivapi, as well as default display settings.
  */
@@ -547,11 +579,9 @@ export const LEVEL_ITEMS: Record<SupportedLevel, LevelItemInfo> = {
         minMateria: 5,
         maxMateria: 6,
         defaultDisplaySettings: {
+            ...defaultItemDispBase,
             minILvl: 380,
             maxILvl: 405,
-            minILvlFood: 640,
-            maxILvlFood: 999,
-            higherRelics: true,
         },
     },
     80: {
@@ -563,15 +593,13 @@ export const LEVEL_ITEMS: Record<SupportedLevel, LevelItemInfo> = {
         minMateria: 7,
         maxMateria: 8,
         defaultDisplaySettings: {
+            ...defaultItemDispBase,
             // Defaults appropriate for TEA since it is the most common reason to be making
             // a level 80 gear set.
             // There is a BLU-specific override since BLU's only level 80 weapons are 530,
             // see below.
             minILvl: 450,
             maxILvl: 475,
-            minILvlFood: 640,
-            maxILvlFood: 999,
-            higherRelics: true,
         },
     },
     // DAWNTRAIL TODO: cap off level 90 items
@@ -585,11 +613,9 @@ export const LEVEL_ITEMS: Record<SupportedLevel, LevelItemInfo> = {
         minMateria: 7,
         maxMateria: 10,
         defaultDisplaySettings: {
+            ...defaultItemDispBase,
             minILvl: 640,
             maxILvl: 999,
-            minILvlFood: 640,
-            maxILvlFood: 999,
-            higherRelics: true,
         },
     },
     100: {
@@ -600,12 +626,10 @@ export const LEVEL_ITEMS: Record<SupportedLevel, LevelItemInfo> = {
         minMateria: 9,
         maxMateria: 12,
         defaultDisplaySettings: {
+            ...defaultItemDispBase,
             // Raise this when more gear is available
-            minILvl: 680,
+            minILvl: 740,
             maxILvl: 999,
-            minILvlFood: 670,
-            maxILvlFood: 999,
-            higherRelics: true,
         },
     },
 };
@@ -734,7 +758,7 @@ export const STAT_ABBREVIATIONS: Record<RawStatKey, string> = {
  * @param id The ID
  * @returns The stat key
  */
-export function statById(id: number): keyof RawStats {
+export function statById(id: number): keyof RawStats | undefined {
     switch (id) {
         case 1:
             return "strength";
@@ -791,6 +815,7 @@ export function getRaceStats(race: RaceName | undefined) {
     }
 }
 
+// Are these still needed? This is done server-side now.
 export const ARTIFACT_ITEM_LEVELS = [
     290,
     430,
@@ -871,9 +896,10 @@ export function bluWdfromInt(gearIntStat: number): number {
 export const defaultItemDisplaySettings: ItemDisplaySettings = {
     minILvl: 680,
     maxILvl: 999,
-    minILvlFood: 610,
+    minILvlFood: 740,
     maxILvlFood: 999,
     higherRelics: true,
+    showNq: false,
 } as const;
 
 export const MAX_PARTY_BONUS: PartyBonusAmount = 5;

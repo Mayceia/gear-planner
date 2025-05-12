@@ -1,5 +1,6 @@
-import {AttackType, ComputedSetStats, JobData, LevelStats} from "./geartypes";
+import {AttackType, ComputedSetStats, JobData, JobDataConst, LevelStats, RawStats, ScalingOverrides} from "./geartypes";
 import {chanceMultiplierStdDev, fixedValue, multiplyValues, ValueWithDev} from "./deviation";
+
 /*
     Common math for FFXIV.
 
@@ -53,7 +54,7 @@ export function trunc(input: number) {
  * but you should just call 'fl' directly in that case.
  * @param input The number to round.
  */
-function flp(places: number, input: number) {
+export function flp(places: number, input: number) {
     if (places % 1 !== 0 || places < 0) {
         throw Error(`Invalid places input ${places} - must be non-negative integer`);
     }
@@ -148,9 +149,14 @@ export function detDmg(levelStats: LevelStats, det: number) {
  * @param levelStats Level stats for the level at which the computation is to be performed.
  * @param jobStats Job stats for the job for which the computation is to be performed.
  * @param wd The weapon damage value.
+ * @param petAction Whether this is a pet action.
  */
-export function wdMulti(levelStats: LevelStats, jobStats: JobData, wd: number) {
-    const mainStatJobMod = jobStats.jobStatMultipliers[jobStats.mainStat];
+export function wdMulti(levelStats: LevelStats, jobStats: JobData, wd: number, petAction: boolean = false) {
+    let mainStatJobMod = jobStats.jobStatMultipliers[jobStats.mainStat];
+    if (petAction) {
+        // All pet actions use a job mod of 100.
+        mainStatJobMod = 100;
+    }
     return fl(levelStats.baseMainStat * mainStatJobMod / 1000 + wd) / 100;
 }
 
@@ -193,6 +199,20 @@ export function mainStatMulti(levelStats: LevelStats, jobStats: JobData, mainsta
 }
 
 /**
+ * Convert a main stat value to a damage multiplier for Living Shadow abilities.
+ *
+ * @param levelStats
+ * @param jobStats
+ * @param livingShadowStrength
+ */
+export function mainStatMultiLivingShadow(levelStats: LevelStats, livingShadowStrength: number) {
+    // Living Shadow always uses the 'other' power scaling, i.e.
+    // without Tank Mastery.
+    const apMod = levelStats.mainStatPowerMod['other'];
+    return Math.max(0, (trunc(apMod * (livingShadowStrength - levelStats.baseMainStat) / levelStats.baseMainStat) + 100) / 100);
+}
+
+/**
  * Convert a tenacity stat value to its respective damage multiplier.
  *
  * AkhMorning equivalent: F(TNC)
@@ -222,8 +242,28 @@ export function tenacityIncomingDmg(levelStats: LevelStats, tenacity: number) {
  * @param levelStats Level stats for the level at which the computation is to be performed.
  * @param dhit The direct hit stat value.
  */
-export function autoDhBonusDmg(levelStats: LevelStats, dhit: number) {
+export function autoDhitBonusDmg(levelStats: LevelStats, dhit: number) {
     return fl(140 * ((dhit - levelStats.baseSubStat) / levelStats.levelDiv)) / 1000;
+}
+
+/**
+ * Compute auto-crit bonus damage granted by crit chance buffs which would otherwise be redundant on an auto-crit.
+ *
+ * @param critMulti       The normal critical strike multiplier.
+ * @param bonusCritChance The amount of extra critical strike chance from buffs.
+ */
+export function autoCritBuffDmg(critMulti: number, bonusCritChance: number) {
+    return flp(3, 1 + ((critMulti - 1) * bonusCritChance));
+}
+
+/**
+ * Compute auto-dhit bonus damage granted by dhit chance buffs which would otherwise be redundant on an auto-dhit.
+ *
+ * @param dhMulti       The normal critical strike multiplier.
+ * @param bonusDhChance The amount of extra critical strike chance from buffs.
+ */
+export function autoDhitBuffDmg(dhMulti: number, bonusDhChance: number) {
+    return flp(3, 1 + ((dhMulti - 1) * bonusDhChance));
 }
 
 /**
@@ -269,10 +309,41 @@ function usesCasterDamageFormula(stats: ComputedSetStats, attackType: AttackType
 }
 
 /**
+ * Gets Living Shadow's strength value from a given set of gear stats and racial bonuses.
+ *
+ * @param rawStrength The raw strength (pre party bonus)
+ * @param racialStats the (total) stats for the race performing the attack
+ */
+export function getLivingShadowStrength(rawStrength: number, racialStats: RawStats): number {
+    // Remove the strength racial bonus
+    if (racialStats) {
+        const strengthBonus = racialStats['strength'];
+        if (strengthBonus) {
+            rawStrength -= strengthBonus;
+        }
+    }
+
+    const livingShadowRacialBonus = 2;
+    rawStrength += livingShadowRacialBonus;
+    return rawStrength;
+}
+
+/**
+ * Returns the "zero" ScalingOverrides object, which represents normal scalings for
+ * an ability.
+ */
+export function getDefaultScalings(stats: ComputedSetStats): ScalingOverrides {
+    return {
+        mainStatMulti: stats.mainStatMulti,
+        wdMulti: stats.wdMulti,
+    };
+}
+
+// TODO: autoCrit unit tests
+/**
  * Computes base damage. Does not factor in crit/dh RNG nor damage variance.
  */
-export function baseDamageFull(stats: ComputedSetStats, potency: number, attackType: AttackType = 'Unknown', autoDH: boolean = false, isDot: boolean = false): ValueWithDev {
-
+export function baseDamageFull(stats: ComputedSetStats, potency: number, attackType: AttackType = 'Unknown', autoDH: boolean = false, isDot: boolean = false, scalingOverrides = getDefaultScalings(stats), autoCrit: boolean = false): ValueWithDev {
     let spdMulti: number;
     const isAA = attackType === 'Auto-attack';
     if (isAA) {
@@ -289,9 +360,17 @@ export function baseDamageFull(stats: ComputedSetStats, potency: number, attackT
         spdMulti = 1.0;
     }
     // Multiplier from main stat
-    const mainStatMulti = isAA ? stats.aaStatMulti : stats.mainStatMulti;
-    // Multiplier from weapon damage. If this is an auto-attack, use the AA multi instead of the pure WD multi.
-    const wdMulti = isAA ? stats.aaMulti : stats.wdMulti;
+    let mainStatMulti = scalingOverrides.mainStatMulti;
+
+    // Multiplier from weapon damage.
+    let wdMulti = scalingOverrides.wdMulti;
+
+    //If this is an auto-attack, use the AA multis.
+    if (isAA) {
+        mainStatMulti = stats.aaStatMulti;
+        wdMulti = stats.aaMulti;
+    }
+
     // Det multiplier
     const detMulti = stats.detMulti;
     // Extra damage from auto DH bonus
@@ -301,9 +380,6 @@ export function baseDamageFull(stats: ComputedSetStats, potency: number, attackT
     const traitMulti = stats.traitMulti(attackType);
     const effectiveDetMulti = autoDH ? detAutoDhMulti : detMulti;
 
-    // console.log({
-    //     mainStatMulti: mainStatMulti, wdMulti: wdMulti, critMulti: critMulti, critRate: critRate, dhRate: dhRate, dhMulti: dhMulti, detMulti: detMulti, tncMulti: tncMulti, traitMulti: traitMulti
-    // });
     // Base action potency and main stat multi
     let stage1potency: number;
     // Mahdi:
@@ -316,7 +392,6 @@ export function baseDamageFull(stats: ComputedSetStats, potency: number, attackT
         // Factor in Tenacity multiplier
         const afterTnc = fl(basePotency * tncMulti);
         // Factor in sps/sks for dots
-        // noinspection UnnecessaryLocalVariableJS
         const afterSpd = fl(afterTnc * spdMulti);
         stage1potency = afterSpd;
     }
@@ -329,7 +404,6 @@ export function baseDamageFull(stats: ComputedSetStats, potency: number, attackT
         // Factor in weapon damage multiplier
         const afterWeaponDamage = fl(afterTnc * wdMulti);
         // Factor in sps/sks for dots
-        // noinspection UnnecessaryLocalVariableJS
         const afterSpd = fl(afterWeaponDamage * spdMulti);
         stage1potency = afterSpd;
     }
@@ -402,6 +476,7 @@ export function baseHealing(stats: ComputedSetStats, potency: number, attackType
  *
  * @param baseDamage The base damage amount.
  * @param stats The stats.
+ * @deprecated Use {@link #applyDhCritFull}
  */
 export function applyDhCrit(baseDamage: number, stats: ComputedSetStats) {
     return baseDamage * (1 + stats.dhitChance * (stats.dhitMulti - 1)) * (1 + stats.critChance * (stats.critMulti - 1));
@@ -409,8 +484,8 @@ export function applyDhCrit(baseDamage: number, stats: ComputedSetStats) {
 
 export function dhCritPercentStdDev(stats: ComputedSetStats, forcedCrit: boolean, forcedDhit: boolean) {
     return multiplyValues(
-        forcedCrit ? chanceMultiplierStdDev(1, stats.critMulti) : chanceMultiplierStdDev(stats.critChance, stats.critMulti),
-        forcedDhit ? chanceMultiplierStdDev(1, stats.dhitMulti) : chanceMultiplierStdDev(stats.dhitChance, stats.dhitMulti)
+        forcedCrit ? chanceMultiplierStdDev(1, stats.critMulti * stats.autoCritBuffMulti) : chanceMultiplierStdDev(stats.critChance, stats.critMulti),
+        forcedDhit ? chanceMultiplierStdDev(1, stats.dhitMulti * stats.autoDhitBuffMulti) : chanceMultiplierStdDev(stats.dhitChance, stats.dhitMulti)
     );
 }
 
@@ -430,14 +505,6 @@ export function applyCrit(baseDamage: number, stats: ComputedSetStats) {
     return baseDamage * (1 + stats.critChance * (stats.critMulti - 1));
 }
 
-// export function critDhVarianceRatio(stats: ComputedSetStats): number {
-//
-// }
-
-// export function critDhVariance(damage: number, stats: ComputedSetStats) {
-//     return critDhVarianceRatio(stats) * damage;
-// }
-
 /**
  * Convert vitality to hp.
  *
@@ -451,12 +518,11 @@ export function vitToHp(levelStats: LevelStats, jobStats: JobData, vitality: num
     return fl(levelStats.hp * jobStats.jobStatMultipliers.hp / 100) + fl((vitality - levelStats.baseMainStat) * hpMod);
 }
 
-export function hpScalar(levelStats: LevelStats, jobStats: JobData) {
+export function hpScalar(levelStats: LevelStats, jobStats: JobDataConst) {
     // @ts-expect-error - can't figure out type def
     return levelStats.hpScalar[jobStats.role] ?? levelStats.hpScalar.other;
 }
 
-export function mainStatPowerMod(levelStats: LevelStats, jobStats: JobData) {
-    // @ts-expect-error - can't figure out type def
+export function mainStatPowerMod(levelStats: LevelStats, jobStats: JobDataConst) {
     return levelStats.mainStatPowerMod[jobStats.role] ?? levelStats.mainStatPowerMod.other;
 }

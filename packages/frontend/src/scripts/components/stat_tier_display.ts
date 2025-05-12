@@ -16,7 +16,7 @@ import {
     vitToHp
 } from "@xivgear/xivmath/xivmath";
 import {GearPlanSheet} from "@xivgear/core/sheet";
-import {recordSheetEvent} from "@xivgear/core/analytics/analytics";
+import {recordSheetEvent} from "../analytics/analytics";
 
 interface Tiering {
     lower: number,
@@ -30,6 +30,8 @@ interface TieringOffset {
 
 interface TieringDisplay {
     label: string,
+    // Alt short label
+    shortLabel?: string,
     fullName: string,
     description: string,
     tieringFunc: (offset: number) => Tiering,
@@ -40,8 +42,10 @@ export class SingleStatTierDisplay extends HTMLDivElement {
     private readonly lowerLeftDiv: HTMLDivElement;
     private readonly lowerRightDiv: HTMLDivElement;
     private readonly upperDiv: HTMLDivElement;
+    private readonly upperDivShort: HTMLDivElement;
     private readonly expansionDiv: HTMLDivElement;
     private _expanded: boolean;
+    private _clickable: boolean;
 
     constructor(private stat: RawStatKey) {
         super();
@@ -49,8 +53,11 @@ export class SingleStatTierDisplay extends HTMLDivElement {
         this.classList.add('single-stat-tier-display');
         this.classList.add('stat-' + stat);
         this.upperDiv = document.createElement('div');
-        this.upperDiv.classList.add('single-stat-tier-display-upper');
+        this.upperDiv.classList.add('single-stat-tier-display-upper', 'single-stat-tier-display-upper-long');
         this.appendChild(this.upperDiv);
+        this.upperDivShort = document.createElement('div');
+        this.upperDivShort.classList.add('single-stat-tier-display-upper', 'single-stat-tier-display-upper-short');
+        this.appendChild(this.upperDivShort);
 
         this.lowerLeftDiv = document.createElement('div');
         // Lower bound
@@ -63,15 +70,18 @@ export class SingleStatTierDisplay extends HTMLDivElement {
 
         this.expansionDiv = document.createElement('div');
         this.expansionDiv.classList.add('single-stat-tier-display-expansion');
-        this.expansionDiv.textContent = "Foo bar";
+        this.expansionDiv.textContent = "If you can read this, it is a bug.";
         this.appendChild(this.expansionDiv);
 
         this.expanded = false;
     }
 
     refresh(tiering: TieringDisplay): void {
+        // Formatting of the base element (always visible)
         this.upperDiv.textContent = tiering.label;
         this.upperDiv.title = `${tiering.label}: ${tiering.description}`;
+        this.upperDivShort.textContent = tiering.shortLabel ?? tiering.label;
+        this.upperDivShort.title = `${tiering.label}: ${tiering.description}`;
         {
             const baseTiering = tiering.tieringFunc(0);
             if (baseTiering.lower > 0) {
@@ -88,6 +98,7 @@ export class SingleStatTierDisplay extends HTMLDivElement {
             this.lowerRightDiv.title = `You must gain ${baseTiering.upper} points of ${this.stat} in order to increase your ${tiering.fullName}.`;
         }
 
+        // Formatting of the extra pop-down elements
         let hasSeenNegative: boolean = false;
         const elements: Node[] = [];
         tiering.extraOffsets.forEach((extraOffset) => {
@@ -133,6 +144,9 @@ export class SingleStatTierDisplay extends HTMLDivElement {
             elements.push(div);
         });
         this.expansionDiv.replaceChildren(...elements);
+
+        // if nothing to expand, be unclickable
+        this.clickable = tiering.extraOffsets.length > 0;
     }
 
     get expanded(): boolean {
@@ -142,6 +156,22 @@ export class SingleStatTierDisplay extends HTMLDivElement {
     set expanded(value: boolean) {
         this._expanded = value;
         this.expansionDiv.style.display = value ? '' : 'none';
+    }
+
+    get clickable(): boolean {
+        return this._clickable;
+    }
+
+    set clickable(value: boolean) {
+        if (value) {
+            this.classList.add('stat-tiering-clickable');
+            this.classList.remove('stat-tiering-unclickable');
+        }
+        else {
+            this.classList.remove('stat-tiering-clickable');
+            this.classList.add('stat-tiering-unclickable');
+        }
+        this._clickable = value;
     }
 }
 
@@ -173,24 +203,26 @@ export class StatTierDisplay extends HTMLDivElement {
                         this.appendChild(singleStatTierDisplay);
                         // singleStatTierDisplay.addEventListener('click', () => this.toggleState());
                         singleStatTierDisplay.addEventListener('click', (ev) => {
-                            if (ev.detail === 1) {
-                                const expanded = singleStatTierDisplay.expanded = !singleStatTierDisplay.expanded;
-                                recordSheetEvent('singleTierDisplayClick', this.sheet, {
-                                    expanded: expanded,
-                                    stat: stat,
-                                });
-                            }
-                            else if (ev.detail >= 2) {
-                                // If this is a double click, the first click would have already toggled the state
-                                // of the target.
-                                const newState = singleStatTierDisplay.expanded;
-                                for (const display of this.eleMap.values()) {
-                                    display.expanded = newState;
+                            if (singleStatTierDisplay.clickable) {
+                                if (ev.detail === 1) {
+                                    const expanded = singleStatTierDisplay.expanded = !singleStatTierDisplay.expanded;
+                                    recordSheetEvent('singleTierDisplayClick', this.sheet, {
+                                        expanded: expanded,
+                                        stat: stat,
+                                    });
                                 }
-                                recordSheetEvent('allTierDisplayClick', this.sheet, {
-                                    expanded: newState,
-                                    stat: stat,
-                                });
+                                else if (ev.detail >= 2) {
+                                    // If this is a double click, the first click would have already toggled the state
+                                    // of the target.
+                                    const newState = singleStatTierDisplay.expanded;
+                                    for (const display of this.eleMap.values()) {
+                                        display.expanded = newState;
+                                    }
+                                    recordSheetEvent('allTierDisplayClick', this.sheet, {
+                                        expanded: newState,
+                                        stat: stat,
+                                    });
+                                }
                             }
                         });
                     }
@@ -314,6 +346,7 @@ export class StatTierDisplay extends HTMLDivElement {
                 else {
                     tierDisplays.push({
                         label: abbrev + ' GCD',
+                        shortLabel: 'GCD',
                         fullName: 'GCD for spells',
                         description: 'Global cooldown (recast) time for spells',
                         tieringFunc: makeTiering(value => {
@@ -325,6 +358,7 @@ export class StatTierDisplay extends HTMLDivElement {
                 }
                 return [...tierDisplays, {
                     label: abbrev + ' DoT',
+                    shortLabel: 'DoT',
                     fullName: 'DoT scalar for spells',
                     description: 'DoT damage multiplier for spells',
                     tieringFunc: makeTiering(value => spsTickMulti(levelStats, value)),
@@ -351,6 +385,7 @@ export class StatTierDisplay extends HTMLDivElement {
                 else {
                     tierDisplays.push({
                         label: abbrev + ' GCD',
+                        shortLabel: 'GCD',
                         fullName: 'GCD for weaponskills',
                         description: 'Global cooldown (recast) time for weaponskills',
                         tieringFunc: makeTiering(value => {
@@ -363,6 +398,7 @@ export class StatTierDisplay extends HTMLDivElement {
 
                 return [...tierDisplays, {
                     label: abbrev + ' DoT',
+                    shortLabel: 'DoT',
                     fullName: 'DoT scalar for weaponskills',
                     description: 'DoT damage multiplier for weaponskills',
                     tieringFunc: makeTiering(value => sksTickMulti(levelStats, value)),

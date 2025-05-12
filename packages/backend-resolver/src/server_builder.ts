@@ -2,27 +2,41 @@ import 'global-jsdom/register';
 import './polyfills';
 import Fastify, {FastifyRequest} from "fastify";
 import {getShortLink, getShortlinkFetchUrl} from "@xivgear/core/external/shortlink_server";
-import {PartyBonusAmount, SetExport, SheetExport, SheetStatsExport} from "@xivgear/xivmath/geartypes";
-import {getBisSheet, getBisSheetFetchUrl} from "@xivgear/core/external/static_bis";
-// import {registerDefaultSims} from "@xivgear/gearplan-frontend/sims/default_sims";
+import {
+    PartyBonusAmount,
+    SetExport,
+    SetExportExternalSingle,
+    SheetExport,
+    SheetStatsExport,
+    TopLevelExport
+} from "@xivgear/xivmath/geartypes";
+import {getBisIndexUrl, getBisSheet, getBisSheetFetchUrl} from "@xivgear/core/external/static_bis";
 import {HEADLESS_SHEET_PROVIDER} from "@xivgear/core/sheet";
-import {JobName, MAX_PARTY_BONUS} from "@xivgear/xivmath/xivconstants";
+import {JOB_DATA, JobName, MAX_PARTY_BONUS} from "@xivgear/xivmath/xivconstants";
+import cors from '@fastify/cors';
 import {
     DEFAULT_DESC,
     DEFAULT_NAME,
     HASH_QUERY_PARAM,
     NavPath,
+    NavState,
+    ONLY_SET_QUERY_PARAM,
     parsePath,
     PATH_SEPARATOR,
     PREVIEW_MAX_DESC_LENGTH,
-    PREVIEW_MAX_NAME_LENGTH
+    PREVIEW_MAX_NAME_LENGTH,
+    SELECTION_INDEX_QUERY_PARAM,
+    tryParseOptionalIntParam
 } from "@xivgear/core/nav/common_nav";
 import {nonCachedFetch} from "./polyfills";
 import fastifyWebResponse from "fastify-web-response";
 import {getFrontendPath, getFrontendServer} from "./frontend_file_server";
 import process from "process";
+import {extractSingleSet} from "@xivgear/core/util/sheet_utils";
 
 let initDone = false;
+
+type ExportedData = SheetExport | SetExportExternalSingle;
 
 function checkInit() {
     if (!initDone) {
@@ -35,11 +49,32 @@ function doInit() {
     // registerDefaultSims();
 }
 
-async function importExportSheet(request: FastifyRequest, exported: object): Promise<SheetStatsExport> {
+type SheetRequest = FastifyRequest<{
+    Querystring: Record<string, string | undefined>;
+    Params: Record<string, string>;
+}>;
+
+async function importExportSheet(request: SheetRequest, exportedPre: SheetExport | SetExport, nav?: NavPath): Promise<SheetStatsExport> {
+    const exportedInitial: SheetExport | SetExport = exportedPre;
+    const initiallyFullSheet = 'sets' in exportedPre;
+    const onlySetIndex: number | undefined = (nav !== undefined && "onlySetIndex" in nav) ? nav.onlySetIndex : undefined;
+    if (onlySetIndex !== undefined) {
+        if (!initiallyFullSheet) {
+            request.log.warn("onlySetIndex does not make sense when isFullSheet is false");
+        }
+        else {
+            const singleMaybe = extractSingleSet(exportedInitial as SheetExport, onlySetIndex);
+            if (singleMaybe === undefined) {
+                throw new Error(`Error: Set index ${onlySetIndex} is not valid.`);
+            }
+            exportedPre = singleMaybe;
+        }
+    }
+    const exported = exportedPre;
     const isFullSheet = 'sets' in exported;
     const sheet = isFullSheet ? HEADLESS_SHEET_PROVIDER.fromExport(exported as SheetExport) : HEADLESS_SHEET_PROVIDER.fromSetExport(exported as SetExport);
     sheet.setViewOnly();
-    const pb = request.query['partyBonus'] as string | undefined;
+    const pb = request.query.partyBonus;
     if (pb) {
         const parsed = parseInt(pb);
         if (!isNaN(parsed) && parsed >= 0 && parsed <= MAX_PARTY_BONUS) {
@@ -63,11 +98,11 @@ function buildServerBase() {
         ignoreDuplicateSlashes: true,
         // querystringParser: str => querystring.parse(str, '&', '=', {}),
     });
+    fastifyInstance.register(cors, {
+        methods: ['GET', 'OPTIONS'],
+        strictPreflight: false,
+    });
 
-    // fastifyInstance.get('/echo', async (request: FastifyRequest, reply) => {
-    //     return request.query;
-    // });
-    //
     fastifyInstance.get('/healthcheck', async (request, reply) => {
         return 'up';
     });
@@ -75,21 +110,219 @@ function buildServerBase() {
     return fastifyInstance;
 }
 
+type NavResult = {
+    preloadUrl: URL | null,
+    sheetData: Promise<ExportedData> | null,
+    name: Promise<string | undefined>,
+    description: Promise<string | undefined>,
+    job: Promise<JobName | undefined>,
+}
+
+function fillSheetData(preloadUrl: NavResult['preloadUrl'], sheetData: Promise<ExportedData>, osIndex: number | undefined): NavResult {
+    const processed: Promise<[name: string | undefined, desc: string | undefined, job: JobName | undefined]> = sheetData.then(exported => {
+        let set = undefined;
+        if (osIndex !== undefined && 'sets' in exported) {
+            set = exported.sets[osIndex] as SetExport;
+        }
+        const name = set?.['name'] || exported['name'];
+        const desc = set?.['description'] || exported['description'];
+        const job = exported.job;
+        return [name, desc, job];
+    });
+    return {
+        preloadUrl: preloadUrl,
+        sheetData: sheetData,
+        name: processed.then(p => p[0]),
+        description: processed.then(p => p[1]),
+        job: processed.then(p => p[2]),
+    };
+}
+
+function fillBisBrowserData(path: string[]): NavResult {
+    const job = (path.find(element => element.toUpperCase() in JOB_DATA)?.toUpperCase() as JobName ?? undefined);
+    // Join the path parts with spaces, but make each individual part either start with a capital, or entirely capitalized
+    // if it looks like a job name. If path is empty, use undefined instead.
+    const label: string | undefined = path.length > 0 ? path.map(pathPart => {
+        const upper = pathPart.toUpperCase();
+        if (upper in JOB_DATA) {
+            return upper;
+        }
+        else if (upper) {
+            return `${pathPart.slice(0, 1).toUpperCase() + pathPart.slice(1)}`;
+        }
+        else {
+            return pathPart;
+        }
+    }).join(" ") : undefined;
+    return {
+        description: Promise.resolve(label ? `Best-in-Slot Gear Sets for ${label} in Final Fantasy XIV` : "Best-in-Slot Gear Sets for Final Fantasy XIV"),
+        job: Promise.resolve(job),
+        name: Promise.resolve(label ? label + ' BiS' : undefined),
+        preloadUrl: getBisIndexUrl(),
+        sheetData: null,
+    };
+}
+
+function resolveNavData(nav: NavPath | null): NavResult | null {
+    if (nav === null) {
+        return null;
+    }
+    switch (nav.type) {
+        case "newsheet":
+        case "importform":
+        case "saved":
+            return null;
+        case "shortlink":
+            // TODO: combine these into one call
+            return fillSheetData(getShortlinkFetchUrl(nav.uuid), getShortLink(nav.uuid).then(JSON.parse), nav.onlySetIndex);
+        case "setjson":
+        case "sheetjson":
+            return fillSheetData(null, Promise.resolve(nav.jsonBlob as TopLevelExport), undefined);
+        case "bis":
+            return fillSheetData(getBisSheetFetchUrl(nav.path), getBisSheet(nav.path).then(JSON.parse), nav.onlySetIndex);
+        case "bisbrowser":
+            return fillBisBrowserData(nav.path);
+    }
+    throw Error(`Unable to resolve nav result: ${nav.type}`);
+}
+
+export type EmbedCheckResponse = {
+    isValid: true,
+} | {
+    isValid: false,
+    reason: string,
+}
+
 export function buildStatsServer() {
 
     const fastifyInstance = buildServerBase();
 
-    // TODO: write something like this but using the new generic pathing logic
-    fastifyInstance.get('/fulldata/:uuid', async (request: FastifyRequest, reply) => {
+    fastifyInstance.get('/validateEmbed', async (request: SheetRequest, reply) => {
+        const path = request.query?.[HASH_QUERY_PARAM] ?? '';
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const pathPaths = path.split(PATH_SEPARATOR);
+        const state = new NavState(pathPaths, osIndex, selIndex);
+        const nav = parsePath(state);
+        request.log.info(pathPaths, 'Path');
+        const navResult = resolveNavData(nav);
+        if (nav !== null && navResult !== null && navResult.sheetData !== null) {
+            const exported: ExportedData = await navResult.sheetData;
+            reply.header("cache-control", "max-age=7200, public");
+            if ('sets' in exported && osIndex === undefined) {
+                reply.send({
+                    isValid: false,
+                    reason: "full sheets cannot be embedded",
+                } satisfies EmbedCheckResponse);
+            }
+            else if ('embed' in nav && nav.embed) {
+                reply.send({
+                    isValid: true,
+                } satisfies EmbedCheckResponse);
+            }
+            else {
+                reply.send({
+                    isValid: false,
+                    reason: "not an embed",
+                } satisfies EmbedCheckResponse);
+            }
+        }
+        else {
+            reply.send({
+                isValid: false,
+                reason: `path ${pathPaths} not found`,
+            } satisfies EmbedCheckResponse);
+        }
+    });
+
+    fastifyInstance.get('/basedata', async (request: SheetRequest, reply) => {
+        const path = request.query?.[HASH_QUERY_PARAM] ?? '';
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const pathPaths = path.split(PATH_SEPARATOR);
+        const state = new NavState(pathPaths, osIndex, selIndex);
+        const nav = parsePath(state);
+        request.log.info(pathPaths, 'Path');
+        const navResult = resolveNavData(nav);
+        if (nav !== null && navResult !== null && navResult.sheetData !== null) {
+            const exported: ExportedData = await navResult.sheetData;
+            reply.header("cache-control", "max-age=7200, public");
+            reply.send(exported);
+        }
+        reply.status(404);
+    });
+
+    fastifyInstance.get('/fulldata', async (request: SheetRequest, reply) => {
+        // TODO: deduplicate this code
+        const path = request.query?.[HASH_QUERY_PARAM] ?? '';
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const pathPaths = path.split(PATH_SEPARATOR);
+        const state = new NavState(pathPaths, osIndex, selIndex);
+        const nav = parsePath(state);
+        request.log.info(pathPaths, 'Path');
+        const navResult = resolveNavData(nav);
+        if (nav !== null && navResult !== null && navResult.sheetData !== null) {
+            const exported: ExportedData = await navResult.sheetData;
+            const out = await importExportSheet(request, exported as (SetExport | SheetExport), nav);
+            reply.header("cache-control", "max-age=7200, public");
+            reply.send(out);
+        }
+        reply.status(404);
+    });
+
+    fastifyInstance.get('/fulldata/:uuid', async (request: SheetRequest, reply) => {
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const nav: NavPath = {
+            type: 'shortlink',
+            uuid: request.params['uuid'],
+            onlySetIndex: osIndex,
+            defaultSelectionIndex: selIndex,
+            embed: false,
+            viewOnly: true,
+        };
         const rawData = await getShortLink(request.params['uuid'] as string);
-        const out = await importExportSheet(request, JSON.parse(rawData));
+        const out = await importExportSheet(request, JSON.parse(rawData), nav);
         reply.header("cache-control", "max-age=7200, public");
         reply.send(out);
     });
 
-    fastifyInstance.get('/fulldata/bis/:job/:expac/:sheet', async (request: FastifyRequest, reply) => {
-        const rawData = await getBisSheet(request.params['job'] as JobName, request.params['expac'] as string, request.params['sheet'] as string);
-        const out = await importExportSheet(request, JSON.parse(rawData));
+    fastifyInstance.get('/fulldata/bis/:job/:sheet', async (request: SheetRequest, reply) => {
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const nav: NavPath = {
+            type: 'bis',
+            job: request.params['job'] as JobName,
+            sheet: request.params['sheet'],
+            path: [request.params['job'], request.params['sheet']],
+            onlySetIndex: osIndex,
+            defaultSelectionIndex: selIndex,
+            embed: false,
+            viewOnly: true,
+        };
+        const rawData = await getBisSheet([request.params['job'] as JobName, request.params['sheet'] as string]);
+        const out = await importExportSheet(request, JSON.parse(rawData), nav);
+        reply.header("cache-control", "max-age=7200, public");
+        reply.send(out);
+    });
+
+    fastifyInstance.get('/fulldata/bis/:job/:folder/:sheet', async (request: SheetRequest, reply) => {
+        const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+        const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+        const nav: NavPath = {
+            type: 'bis',
+            job: request.params['job'] as JobName,
+            folder: request.params['folder'],
+            sheet: request.params['sheet'],
+            path: [request.params['job'], request.params['folder'], request.params['sheet']],
+            onlySetIndex: osIndex,
+            defaultSelectionIndex: selIndex,
+            embed: false,
+            viewOnly: true,
+        };
+        const rawData = await getBisSheet([request.params['job'], request.params['folder'], request.params['sheet']]);
+        const out = await importExportSheet(request, JSON.parse(rawData), nav);
         reply.header("cache-control", "max-age=7200, public");
         reply.send(out);
     });
@@ -116,48 +349,26 @@ export function buildPreviewServer() {
     fastifyInstance.register(fastifyWebResponse);
     // This endpoint acts as a proxy. If it detects that you are trying to load something that looks like a sheet,
     // inject social media preview and preload urls.
-    fastifyInstance.get('/', async (request: FastifyRequest, reply) => {
+    fastifyInstance.get('/', async (request: SheetRequest, reply) => {
 
-        let sheetDataPreloadUrl: URL | undefined = undefined;
 
-        async function resolveNav(nav: NavPath): Promise<object | null> {
-            try {
-                switch (nav.type) {
-                    case "newsheet":
-                    case "importform":
-                    case "saved":
-                        return null;
-                    case "shortlink":
-                        // TODO: combine these into one call
-                        sheetDataPreloadUrl = getShortlinkFetchUrl(nav.uuid);
-                        return JSON.parse(await getShortLink(nav.uuid));
-                    case "setjson":
-                    case "sheetjson":
-                        return nav.jsonBlob;
-                    case "bis":
-                        sheetDataPreloadUrl = getBisSheetFetchUrl(nav.job, nav.expac, nav.sheet);
-                        return JSON.parse(await getBisSheet(nav.job, nav.expac, nav.sheet));
-                }
-            }
-            catch (e) {
-                request.log.error(e, 'Error loading nav');
-            }
-            return null;
-        }
-
-        const path = request.query[HASH_QUERY_PARAM] ?? '';
-        const pathPaths = path.split(PATH_SEPARATOR);
-        const nav = parsePath(pathPaths);
-        request.log.info(pathPaths, 'Path');
         const serverUrl = getFrontendServer();
         const clientUrl = getFrontendPath();
         // Fetch original index.html
         const responsePromise = nonCachedFetch(serverUrl + '/index.html', undefined);
         try {
-            const exported: object | null = await resolveNav(nav);
-            if (exported !== null) {
-                let name: string = exported['name'] || "";
-                let desc: string = exported['description'] || "";
+            const path = request.query[HASH_QUERY_PARAM] ?? '';
+            const osIndex: number | undefined = tryParseOptionalIntParam(request.query[ONLY_SET_QUERY_PARAM]);
+            const selIndex: number | undefined = tryParseOptionalIntParam(request.query[SELECTION_INDEX_QUERY_PARAM]);
+            const pathPaths = path.split(PATH_SEPARATOR);
+            const state = new NavState(pathPaths, osIndex, selIndex);
+            const nav = parsePath(state);
+            request.log.info(pathPaths, 'Path');
+            const navResult = resolveNavData(nav);
+            if (navResult !== null) {
+                const sheetDataPreloadUrl = navResult.preloadUrl;
+                let name = await navResult.name || "";
+                let desc = await navResult.description || "";
                 if (name.length > PREVIEW_MAX_NAME_LENGTH) {
                     name = name.substring(0, PREVIEW_MAX_NAME_LENGTH) + "…";
                 }
@@ -203,11 +414,11 @@ export function buildPreviewServer() {
 
                 // Inject preload properties based on job
                 // The rest are part of the static html
-                const job = exported['job'];
+                const job = await navResult.job;
                 if (job) {
                     addFetchPreload(`https://data.xivgear.app/Items?job=${job}`);
                 }
-                if (sheetDataPreloadUrl !== undefined) {
+                if (sheetDataPreloadUrl) {
                     addFetchPreload(sheetDataPreloadUrl.toString());
                 }
                 if (extraScripts) {
@@ -220,8 +431,10 @@ export function buildPreviewServer() {
                         head.appendChild(script);
                     }
 
+                    const isEmbed = nav !== null && 'embed' in nav && nav.embed;
+                    // Don't inject these if embedded
                     extraScripts.forEach(scriptUrl => {
-                        if (nav['embed'] !== true) {
+                        if (!isEmbed) {
                             addExtraScript(scriptUrl, {'async': ''});
                         }
                     });

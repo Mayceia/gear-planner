@@ -6,11 +6,14 @@ import {
     JobData,
     LevelStats,
     PartyBonusAmount,
+    RawStatKey,
     RawStats
 } from "./geartypes";
 import {
     autoAttackModifier,
-    autoDhBonusDmg,
+    autoCritBuffDmg,
+    autoDhitBonusDmg,
+    autoDhitBuffDmg,
     critChance,
     critDmg,
     detDmg,
@@ -28,8 +31,8 @@ import {
     vitToHp,
     wdMulti
 } from "./xivmath";
-import {JobName, SupportedLevel} from "./xivconstants";
-import {sum} from "@xivgear/core/util/array_utils";
+import {getRaceStats, JobName, RaceName, SupportedLevel} from "./xivconstants";
+import {sum} from "@xivgear/util/array_utils";
 
 /**
  * Adds the stats of 'addedStats' into 'baseStats'.
@@ -59,6 +62,14 @@ export type HasteBonus = (attackType: AttackType) => number;
 export type StatModification = (stats: ComputedSetStats, bonuses: RawBonusStats) => void;
 
 /**
+ * Represents a stat modification that is applied earlier in the process compared to {@link StatModification}.
+ * This allows you to change the "base" values rather than merely applying final bonuses.
+ */
+export type StatPreModifications = {
+    newFoodBonuses?: FoodBonuses | null,
+}
+
+/**
  * Represents post-computation stat modifications.
  */
 export class RawBonusStats extends RawStats {
@@ -68,6 +79,7 @@ export class RawBonusStats extends RawStats {
     dhitDmg: number = 0;
     detMulti: number = 0;
     bonusHaste: HasteBonus[] = [];
+    // TODO: These should be used when possible
     forceCrit: boolean = false;
     forceDh: boolean = false;
 }
@@ -82,7 +94,7 @@ function clamp(min: number, max: number, value: number) {
  *
  * @param stats
  */
-export function toSerializableForm(stats: ComputedSetStats): ComputedSetStats {
+export function statsSerializationProxy(stats: ComputedSetStats): ComputedSetStats {
     // The purpose of this is that the fullstats API won't correctly serialize the ComputedSetStatsImpl normally.
     // We care about the
     return new Proxy(stats, {
@@ -151,16 +163,20 @@ export function toSerializableForm(stats: ComputedSetStats): ComputedSetStats {
 export class ComputedSetStatsImpl implements ComputedSetStats {
 
     protected readonly finalBonusStats: RawBonusStats;
-    private currentStats: RawStats;
+    // This is initialized when the ctor calls this.recalc()
+    private currentStats!: RawStats;
+    private _racialStats: RawStats;
+    private _effectiveFoodBonuses!: RawStats;
 
     constructor(
-        private readonly gearStats: RawStats,
+        readonly gearStats: RawStats,
         private readonly foodStats: FoodBonuses,
         readonly level: SupportedLevel,
         readonly levelStats: LevelStats,
         private readonly classJob: JobName,
         private readonly classJobStats: JobData,
-        private readonly partyBonus: PartyBonusAmount
+        readonly partyBonus: PartyBonusAmount,
+        private readonly race: RaceName
     ) {
         this.finalBonusStats = new RawBonusStats();
         // TODO: order of operations here
@@ -176,10 +192,37 @@ export class ComputedSetStatsImpl implements ComputedSetStats {
                 trait.apply(this.finalBonusStats);
             });
         }
+
+        const racialStats = new RawStats({
+            vitality: 20,
+            strength: 20,
+            intelligence: 20,
+            dexterity: 20,
+            mind: 20,
+        });
+        const racialBonus = getRaceStats(this.race);
+        if (racialBonus) {
+            if (racialBonus.vitality) {
+                racialStats['vitality'] += racialBonus.vitality;
+            }
+            if (racialBonus.strength) {
+                racialStats['strength'] += racialBonus.strength;
+            }
+            if (racialBonus.intelligence) {
+                racialStats['intelligence'] += racialBonus.intelligence;
+            }
+            if (racialBonus.dexterity) {
+                racialStats['dexterity'] += racialBonus.dexterity;
+            }
+            if (racialBonus.mind) {
+                racialStats['mind'] += racialBonus.mind;
+            }
+        }
+        this._racialStats = racialStats;
     }
 
     private recalc() {
-        this.currentStats = finalizeStatsInt(
+        const finalized = finalizeStatsInt(
             this.gearStats,
             this.foodStats,
             this.level,
@@ -188,17 +231,23 @@ export class ComputedSetStatsImpl implements ComputedSetStats {
             this.classJobStats,
             this.partyBonus
         );
+        this.currentStats = finalized.raw;
+        this._effectiveFoodBonuses = finalized.effectiveFoodBonuses;
     }
 
-    withModifications(modifications: StatModification): ComputedSetStatsImpl {
+    withModifications(modifications: StatModification, pre: StatPreModifications = {}): ComputedSetStatsImpl {
         const out = new ComputedSetStatsImpl(
             this.gearStats,
-            this.foodStats,
+            // If the new food is not specified, use current food.
+            // If the new food is null, use empty food.
+            // If the new food is not null, use its bonuses.
+            'newFoodBonuses' in pre ? (pre.newFoodBonuses ?? {}) : this.foodStats,
             this.level,
             this.levelStats,
             this.classJob,
             this.classJobStats,
-            this.partyBonus
+            this.partyBonus,
+            this.race
         );
         Object.assign(out.finalBonusStats, this.finalBonusStats);
         modifications(out, out.finalBonusStats);
@@ -298,22 +347,34 @@ export class ComputedSetStatsImpl implements ComputedSetStats {
         return this.classJobStats;
     }
 
+    get racialStats(): RawStats {
+        return this._racialStats;
+    }
+
+    get baseCritChance(): number {
+        return clamp(0, 1, critChance(this.levelStats, this.crit));
+    }
+
     get critChance(): number {
         if (this.finalBonusStats.forceCrit) {
             return 1;
         }
-        return clamp(0, 1, critChance(this.levelStats, this.crit) + this.finalBonusStats.critChance);
+        return clamp(0, 1, this.baseCritChance + this.finalBonusStats.critChance);
     }
 
     get critMulti(): number {
         return critDmg(this.levelStats, this.crit) + this.finalBonusStats.critDmg;
     };
 
+    get baseDhitChance(): number {
+        return clamp(0, 1, dhitChance(this.levelStats, this.dhit));
+    }
+
     get dhitChance(): number {
         if (this.finalBonusStats.forceDh) {
             return 1;
         }
-        return clamp(0, 1, dhitChance(this.levelStats, this.dhit) + this.finalBonusStats.dhitChance);
+        return clamp(0, 1, this.baseDhitChance + this.finalBonusStats.dhitChance);
     };
 
     get dhitMulti(): number {
@@ -357,9 +418,22 @@ export class ComputedSetStatsImpl implements ComputedSetStats {
         return mainStatMulti(this.levelStats, this.classJobStats, this[this.classJobStats.autoAttackStat]);
     };
 
-    get autoDhBonus(): number {
-        return autoDhBonusDmg(this.levelStats, this.dhit);
+    get wdMultiPetAction(): number {
+        const wdEffective = Math.max(this.wdMag, this.wdPhys);
+        return wdMulti(this.levelStats, this.classJobStats, wdEffective, true);
     };
+
+    get autoDhBonus(): number {
+        return autoDhitBonusDmg(this.levelStats, this.dhit);
+    };
+
+    get autoCritBuffMulti(): number {
+        return autoCritBuffDmg(this.critMulti, this.finalBonusStats.critChance);
+    }
+
+    get autoDhitBuffMulti(): number {
+        return autoDhitBuffDmg(this.dhitMulti, this.finalBonusStats.dhitChance);
+    }
 
     get mpPerTick(): number {
         return mpTick(this.levelStats, this.piety);
@@ -373,6 +447,9 @@ export class ComputedSetStatsImpl implements ComputedSetStats {
         return this.weaponDelay;
     };
 
+    get effectiveFoodBonuses(): RawStats {
+        return this._effectiveFoodBonuses;
+    }
 }
 
 export function finalizeStats(
@@ -382,14 +459,16 @@ export function finalizeStats(
     levelStats: LevelStats,
     classJob: JobName,
     classJobStats: JobData,
-    partyBonus: PartyBonusAmount
+    partyBonus: PartyBonusAmount,
+    race: RaceName
 ) {
     return new ComputedSetStatsImpl(
-        gearStats, foodStats, level, levelStats, classJob, classJobStats, partyBonus);
+        gearStats, foodStats, level, levelStats, classJob, classJobStats, partyBonus, race
+    );
 
 }
 
-function finalizeStatsInt(
+export function finalizeStatsInt(
     // TODO: gearStats is currently gear + race/job base stuff. Separate these out.
     gearStats: RawStats,
     foodStats: FoodBonuses,
@@ -398,7 +477,10 @@ function finalizeStatsInt(
     classJob: JobName,
     classJobStats: JobData,
     partyBonus: PartyBonusAmount
-): RawStats {
+): {
+    raw: RawStats,
+    effectiveFoodBonuses: RawStats
+} {
     const combinedStats: RawStats = {...gearStats};
     const mainStatKey = classJobStats.mainStat;
     const aaStatKey = classJobStats.autoAttackStat;
@@ -407,13 +489,21 @@ function finalizeStatsInt(
         combinedStats[aaStatKey] = fl(combinedStats[aaStatKey] * (1 + 0.01 * partyBonus));
     }
     combinedStats.vitality = fl(combinedStats.vitality * (1 + 0.01 * partyBonus));
+    const effectiveFoodBonuses = new RawStats();
     // Food stats
-    for (const stat in foodStats) {
+    for (const key in foodStats) {
+        const stat = key as RawStatKey;
         // These operate on base values, without the party buff
-        const bonus: FoodStatBonus = foodStats[stat];
-        const startingValue = gearStats[stat];
-        const extraValue = Math.min(bonus.max, Math.floor(startingValue * (bonus.percentage / 100)));
-        combinedStats[stat] += extraValue;
+        const bonus: FoodStatBonus | undefined = foodStats[stat];
+        if (bonus !== undefined) {
+            const startingValue = gearStats[stat];
+            const extraValue = Math.min(bonus.max, Math.floor(startingValue * (bonus.percentage / 100)));
+            combinedStats[stat] += extraValue;
+            effectiveFoodBonuses[stat] += extraValue;
+        }
     }
-    return combinedStats;
+    return {
+        raw: combinedStats,
+        effectiveFoodBonuses: effectiveFoodBonuses,
+    };
 }

@@ -1,4 +1,4 @@
-import { SimResult, SimSettings, Simulation } from "@xivgear/core/sims/sim_types";
+import {SimResult, SimSettings, Simulation} from "@xivgear/core/sims/sim_types";
 
 export type ResultTypeOfSim<Sim> = Sim extends Simulation<infer R, unknown, unknown> ? R : never;
 export type SettingsTypeOfSim<Sim> = Sim extends Simulation<SimResult, infer S, unknown> ? S : never;
@@ -27,7 +27,7 @@ export abstract class SimulationGui<ResultType extends SimResult, SettingsType e
      * @param result The result
      * @returns The tooltip
      */
-    abstract makeToolTip?(result: ResultType): string;
+    makeToolTip?(result: ResultType): string;
 
     /**
      * Overrides the results display when clicking into a sim result cell in the set table.
@@ -35,5 +35,5 @@ export abstract class SimulationGui<ResultType extends SimResult, SettingsType e
      * @param result The result
      * @return the result HTML
      */
-    abstract makeResultDisplay?(result: ResultType): HTMLElement;
+    makeResultDisplay?(result: ResultType): HTMLElement;
 }

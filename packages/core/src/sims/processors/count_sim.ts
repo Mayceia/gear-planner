@@ -7,13 +7,13 @@ import {
     SimSpec,
     Simulation
 } from "@xivgear/core/sims/sim_types";
-import { BuffSettingsExport, BuffSettingsManager } from "@xivgear/core/sims/common/party_comp_settings";
-import { defaultResultSettings, ResultSettings } from "@xivgear/core/sims/cycle_sim";
-import { addValues, applyStdDev, multiplyFixed, multiplyIndependent, ValueWithDev } from "@xivgear/xivmath/deviation";
-import { JobName } from "@xivgear/xivmath/xivconstants";
-import { CharacterGearSet } from "@xivgear/core/gear";
-import { abilityEquals } from "@xivgear/core/sims/ability_helpers";
-import { abilityToDamageNew, combineBuffEffects, noBuffEffects } from "@xivgear/core/sims/sim_utils";
+import {BuffSettingsExport, BuffSettingsManager} from "@xivgear/core/sims/common/party_comp_settings";
+import {defaultResultSettings, ResultSettings} from "@xivgear/core/sims/cycle_sim";
+import {addValues, applyStdDev, multiplyFixed, multiplyIndependent, ValueWithDev} from "@xivgear/xivmath/deviation";
+import {JobName} from "@xivgear/xivmath/xivconstants";
+import {CharacterGearSet} from "@xivgear/core/gear";
+import {abilityEquals} from "@xivgear/core/sims/ability_helpers";
+import {abilityToDamageNew, combineBuffEffects, noBuffEffects} from "@xivgear/core/sims/sim_utils";
 
 export type ExternalCountSettings<InternalSettingsType extends SimSettings> = {
     customSettings: InternalSettingsType,
@@ -40,7 +40,7 @@ export type BuffWindowUsages = {
 export type SkillCount = [ability: Ability, count: number];
 
 export abstract class BaseUsageCountSim<ResultType extends CountSimResult, InternalSettingsType extends SimSettings>
-implements Simulation<ResultType, InternalSettingsType, ExternalCountSettings<InternalSettingsType>> {
+    implements Simulation<ResultType, InternalSettingsType, ExternalCountSettings<InternalSettingsType>> {
 
     abstract displayName: string;
     abstract shortName: string;
@@ -62,6 +62,9 @@ implements Simulation<ResultType, InternalSettingsType, ExternalCountSettings<In
             this.buffManager = BuffSettingsManager.defaultForJob(job);
             this.resultSettings = defaultResultSettings();
         }
+    }
+
+    settingsChanged(): void {
     }
 
     abstract makeDefaultSettings(): InternalSettingsType;
@@ -175,6 +178,10 @@ implements Simulation<ResultType, InternalSettingsType, ExternalCountSettings<In
             unbuffedPps: pps,
             buffBuckets: resultBuckets,
         } satisfies CountSimResult as unknown as ResultType;
+    }
+
+    async simulateSimple(set: CharacterGearSet): Promise<number> {
+        return (await this.simulate(set)).mainDpsResult;
     }
 
     /**

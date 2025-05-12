@@ -5,13 +5,11 @@ import {ResultSettings} from "@xivgear/core/sims/cycle_sim";
 export class ResultSettingsArea extends NamedSection {
     constructor(resultSettings: ResultSettings) {
         super("Result Settings");
-        const inputField = new FieldBoundFloatField(resultSettings, 'stdDevs', {
-            inputMode: 'number',
-        });
+        const inputField = new FieldBoundFloatField(resultSettings, 'stdDevs');
         const label = labelFor('+/- Standard Deviations', inputField);
         label.style.display = 'block';
-        this.appendChild(label);
-        this.appendChild(inputField);
+        this.contentArea.appendChild(label);
+        this.contentArea.appendChild(inputField);
     }
 }
 

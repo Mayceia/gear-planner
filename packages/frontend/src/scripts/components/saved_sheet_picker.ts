@@ -1,11 +1,22 @@
-import {CustomCell, CustomColumn, CustomRow, CustomTable, SpecialRow, TitleRow} from "../tables";
+import {
+    col,
+    CustomCell,
+    CustomColumn,
+    CustomRow,
+    CustomTable,
+    SpecialRow,
+    TableSelectionModel,
+    TitleRow
+} from "@xivgear/common-ui/table/tables";
 import {SheetExport} from "@xivgear/xivmath/geartypes";
 import {faIcon, makeActionButton} from "@xivgear/common-ui/components/util";
 import {deleteSheetByKey} from "@xivgear/core/persistence/saved_sheets";
 import {getHashForSaveKey, openSheetByKey, showNewSheetForm} from "../base_ui";
 import {confirmDelete} from "@xivgear/common-ui/components/delete_confirm";
+import {JobIcon} from "./job_icon";
+import {JOB_DATA} from "@xivgear/xivmath/xivconstants";
 
-export class SheetPickerTable extends CustomTable<SheetExport, SheetExport> {
+export class SheetPickerTable extends CustomTable<SheetExport, TableSelectionModel<SheetExport, never, never, SheetExport | null>> {
     constructor() {
         super();
         this.classList.add("gear-sheets-table");
@@ -38,22 +49,37 @@ export class SheetPickerTable extends CustomTable<SheetExport, SheetExport> {
                     return div;
                 },
             },
+            col({
+                shortName: "sheetjob",
+                displayName: "Job",
+                getter: sheet => {
+                    if (sheet.isMultiJob) {
+                        return JOB_DATA[sheet.job].role;
+                    }
+                    return sheet.job;
+                },
+                renderer: job => {
+                    return document.createTextNode(job);
+                },
+            }),
+            col({
+                shortName: "sheetjobicon",
+                displayName: "Job Icon",
+                getter: sheet => {
+                    if (sheet.isMultiJob) {
+                        return JOB_DATA[sheet.job].role;
+                    }
+                    return sheet.job;
+                },
+                renderer: jobOrRole => {
+                    return new JobIcon(jobOrRole);
+                },
+            }),
             {
                 shortName: "sheetlevel",
                 displayName: "Lvl",
                 getter: sheet => sheet.level,
                 fixedWidth: 40,
-            },
-            {
-                shortName: "sheetjob",
-                displayName: "Job",
-                getter: sheet => sheet.job,
-                // renderer: job => {
-                //     const out = document.createElement('div');
-                //     out.replaceChildren(new JobIcon(job), job);
-                //     return out;
-                // },
-                fixedWidth: 60,
             },
             {
                 shortName: "sheetname",
@@ -72,7 +98,7 @@ export class SheetPickerTable extends CustomTable<SheetExport, SheetExport> {
             clickRow(row: CustomRow<SheetExport>) {
                 openSheetByKey(row.dataItem.saveKey);
             },
-            getSelection(): SheetExport {
+            getSelection(): SheetExport | null {
                 return null;
             },
             isCellSelectedDirectly(cell: CustomCell<SheetExport, SheetExport>) {

@@ -8,9 +8,9 @@ import {
     Rotation
 } from "@xivgear/core/sims/cycle_sim";
 import {STANDARD_ANIMATION_LOCK} from "@xivgear/xivmath/xivconstants";
-import * as Actions from './pld_actions_sks';
-import * as Buffs from './pld_buffs_sks';
-import { BaseMultiCycleSim } from "@xivgear/core/sims/processors/sim_processors";
+import * as Actions from './pld_actions';
+import * as Buffs from './pld_types';
+import {BaseMultiCycleSim} from "@xivgear/core/sims/processors/sim_processors";
 
 // keys for Action records structures:
 type PldEnum_GCD = "Fast" | "Riot" | "Royal" | "HS" | "HSHC" | "Atone" |
@@ -358,7 +358,7 @@ export class PldSKSSheetSim extends BaseMultiCycleSim<PldSKSSheetSimResult, PldS
     };
 
     spec = pldSKSSheetSpec;
-    shortName = "pld-sheet-sim";
+    shortName = "pldsks-sheet-sim";
     displayName = pldSKSSheetSpec.displayName;
 
     constructor(settings?: PldSKSSheetSettingsExternal) {

@@ -29,6 +29,7 @@ import {
     MateriaAutoFillController,
     MateriaAutoFillPrio,
     MateriaMemoryExport,
+    MeldableMateriaSlot,
     NO_SYNC_STATS,
     RawStatKey,
     RawStats,
@@ -38,8 +39,8 @@ import {
     SlotMateriaMemoryExport,
     XivCombatItem
 } from "@xivgear/xivmath/geartypes";
-import {Inactivitytimer} from "./util/inactivitytimer";
-import {addStats, finalizeStats} from "@xivgear/xivmath/xivstats";
+import {Inactivitytimer} from "@xivgear/util/inactivitytimer";
+import {addStats, finalizeStats, finalizeStatsInt} from "@xivgear/xivmath/xivstats";
 import {GearPlanSheet} from "./sheet";
 import {isMateriaAllowed} from "./materia/materia_utils";
 
@@ -76,12 +77,15 @@ export class RelicStatMemory {
     }
 }
 
+type SingleMateriaMemory = {
+    id: number,
+    locked: boolean,
+}
 
-// TODO: this is not yet part of exports
 export class MateriaMemory {
     // Map from equipment slot to item ID to list of materia IDs.
     // The extra layer is needed here because you might have the same (non-unique) ring equipped in both slots.
-    private readonly memory: Map<EquipSlotKey, Map<number, number[]>> = new Map();
+    private readonly memory: Map<EquipSlotKey, Map<number, SingleMateriaMemory[]>> = new Map();
 
     /**
      * Get the remembered materia for an item
@@ -91,7 +95,7 @@ export class MateriaMemory {
      * @param equipSlot The equipment slot (needed to differentiate left/right ring)
      * @param item The item in question
      */
-    get(equipSlot: EquipSlotKey, item: GearItem): number[] {
+    get(equipSlot: EquipSlotKey, item: GearItem): SingleMateriaMemory[] {
         const bySlot = this.memory.get(equipSlot);
         if (!bySlot) {
             return [];
@@ -107,7 +111,7 @@ export class MateriaMemory {
      * @param item The item which is about to be unequipped from that slot.
      */
     set(equipSlot: EquipSlotKey, item: EquippedItem) {
-        let bySlot: Map<number, number[]>;
+        let bySlot: Map<number, SingleMateriaMemory[]>;
         if (this.memory.has(equipSlot)) {
             bySlot = this.memory.get(equipSlot);
         }
@@ -115,15 +119,21 @@ export class MateriaMemory {
             bySlot = new Map();
             this.memory.set(equipSlot, bySlot);
         }
-        bySlot.set(item.gearItem.id, item.melds.map(meld => meld.equippedMateria?.id ?? -1));
+        bySlot.set(item.gearItem.id, item.melds.map(meld => {
+            return {
+                id: meld.equippedMateria?.id ?? -1,
+                locked: meld.locked,
+            };
+        }));
     }
 
     export(): MateriaMemoryExport {
         const out: MateriaMemoryExport = {};
         this.memory.forEach((slotValue, slotKey) => {
             const items: SlotMateriaMemoryExport[] = [];
-            slotValue.forEach((materiaIds, itemId) => {
-                items.push([itemId, materiaIds]);
+            slotValue.forEach((memories, itemId) => {
+                // TODO: this does not remember locked/unlocked status
+                items.push([itemId, memories.map(m => m.id), memories.map(m => m.locked)]);
             });
             out[slotKey] = items;
         });
@@ -132,9 +142,15 @@ export class MateriaMemory {
 
     import(memory: MateriaMemoryExport) {
         Object.entries(memory).forEach(([slotKey, itemMemory]) => {
-            const slotMap: Map<number, number[]> = new Map();
+            const slotMap: Map<number, SingleMateriaMemory[]> = new Map();
             for (const itemMemoryElement of itemMemory) {
-                slotMap.set(itemMemoryElement[0], itemMemoryElement[1]);
+                const locked: boolean[] | undefined = itemMemoryElement[2];
+                slotMap.set(itemMemoryElement[0], itemMemoryElement[1].map((id, index) => {
+                    return {
+                        id: id,
+                        locked: locked ? (locked[index] ?? false) : false,
+                    };
+                }));
             }
             this.memory.set(slotKey as EquipSlotKey, slotMap);
         });
@@ -152,6 +168,11 @@ export class SetDisplaySettings {
 
     setSlotHidden(slot: EquipSlotKey, hidden: boolean) {
         this.hiddenSlots.set(slot, hidden);
+    }
+
+    setAllHidden(hidden: boolean) {
+        console.log("setAllHidden: " + hidden);
+        EquipSlots.forEach(slot => this.setSlotHidden(slot, hidden));
     }
 
     export(): SetDisplaySettingsExport {
@@ -214,6 +235,7 @@ export function previewItemStatDetail(item: GearItem, stat: RawStatKey): ItemSin
 type GearSetCheckpoint = {
     equipment: EquipmentSet;
     food: FoodItem | undefined;
+    jobOverride: JobName | null;
 }
 // GearSetCheckpointNode establishes a doubly-linked list of checkpoints.
 // This allows us to easily remove the 'redo' tree if you undo and then make a change.
@@ -232,9 +254,8 @@ export class CharacterGearSet {
     equipment: EquipmentSet;
     listeners: (() => void)[] = [];
     private _dirtyComp: boolean = true;
-    private _updateKey: number = 0;
     private _lastResult: GearSetResult;
-    private _jobOverride: JobName;
+    private _jobOverride: JobName | null = null;
     private _raceOverride: RaceName;
     private _food: FoodItem | undefined;
     private readonly _sheet: GearPlanSheet;
@@ -254,13 +275,17 @@ export class CharacterGearSet {
         this._sheet = sheet;
         this.name = "";
         this.equipment = new EquipmentSet();
+        if (sheet.isMultiJob) {
+            // This acts as a default. For a variety of reasons, such as changing the main class of a sheet, we want
+            // this to be set to the current job upon sheet creation/import.
+            this.earlySetJobOverride(sheet.classJobName);
+        }
     }
 
-    get updateKey() {
-        return this._updateKey;
-    }
 
-
+    /**
+     * The name of the set
+     */
     get name() {
         return this._name;
     }
@@ -270,6 +295,9 @@ export class CharacterGearSet {
         this.notifyListeners();
     }
 
+    /**
+     * Optional description for the set. May be undefined if not specified.
+     */
     get description() {
         return this._description;
     }
@@ -279,26 +307,67 @@ export class CharacterGearSet {
         this.notifyListeners();
     }
 
-
+    /**
+     * The food item currently equipped, else undefined if no food is equipped.
+     */
     get food(): FoodItem | undefined {
         return this._food;
     }
 
+    /**
+     * The sheet of which this set is a member.
+     */
     get sheet(): GearPlanSheet {
         return this._sheet;
     }
 
     private invalidate() {
         this._dirtyComp = true;
-        this._updateKey++;
     }
 
     set food(food: FoodItem | undefined) {
-        this.invalidate();
         this._food = food;
+        this.invalidate();
         this.notifyListeners();
     }
 
+    get jobOverride(): JobName | null {
+        return this._jobOverride;
+    }
+
+    set jobOverride(job: JobName | null) {
+        this._jobOverride = job;
+        const newEffectiveJob = this.job;
+        // Unequip items which are no longer usable under the new job
+        Object.keys(this.equipment).forEach((slot: EquipSlotKey) => {
+            const equipped = this.equipment[slot];
+            if (equipped && !equipped.gearItem.usableByJob(newEffectiveJob)) {
+                this.setEquip(slot, null);
+            }
+        });
+        // TODO: technically, this should check if it is the active sheet
+        this.sheet.gearDisplaySettingsUpdateNow();
+        this.forceRecalc();
+    }
+
+    /**
+     * Like setting jobOverride, but does not trigger any hooks. Useful when initializing an imported set, as the
+     * hooks and such will not have been configured correctly.
+     *
+     * @param job
+     */
+    earlySetJobOverride(job: JobName | null) {
+        this._jobOverride = job;
+    }
+
+    /**
+     * Set a new equipment piece into the given slot. Unlike directly setting fields on {@link #equipment}, this will
+     * also handle things like materia autofill, invalidation, saving, etc.
+     *
+     * @param slot
+     * @param item
+     * @param materiaAutoFillController
+     */
     setEquip(slot: EquipSlotKey, item: GearItem, materiaAutoFillController?: MateriaAutoFillController) {
         if (this.equipment[slot]?.gearItem === item) {
             return;
@@ -322,53 +391,85 @@ export class CharacterGearSet {
             }
             else {
                 // This var tracks what we would like to re-equip
-                let reEquip: Materia[] = [];
+                let reEquip: {
+                    materia: Materia | null,
+                    locked: boolean,
+                }[] = [];
                 if (mode === 'retain_slot' || mode === 'retain_slot_else_prio') {
                     if (old && old.melds.find(meld => meld.equippedMateria)) {
-                        reEquip = old.melds.map(meld => meld.equippedMateria).filter(value => value);
+                        reEquip = old.melds.map(meld => {
+                            return {
+                                materia: meld.equippedMateria,
+                                locked: meld.locked,
+                            };
+                        }).filter(value => value);
                     }
                 }
                 else if (mode === 'retain_item' || mode === 'retain_item_else_prio') {
-                    const materiaIds = this.materiaMemory.get(slot, item);
-                    materiaIds.forEach((materiaId, index) => {
+                    const remembered = this.materiaMemory.get(slot, item);
+                    remembered.forEach((slotMemory, index) => {
+                        const materiaId = slotMemory.id;
                         if (materiaId <= 0) {
-                            return;
+                            reEquip.push({
+                                materia: null,
+                                locked: slotMemory.locked,
+                            });
                         }
-                        const meld = this.equipment[slot].melds[index];
-                        if (meld) {
-                            reEquip.push(this._sheet.getMateriaById(materiaId));
+                        else {
+                            const meld = this.equipment[slot].melds[index];
+                            if (meld) {
+                                reEquip.push({
+                                    materia: this._sheet.getMateriaById(materiaId),
+                                    locked: slotMemory.locked,
+                                });
+                            }
+                            else {
+                                reEquip.push({
+                                    materia: null,
+                                    locked: slotMemory.locked,
+                                });
+                            }
                         }
                     });
                 }
-                if (mode === 'autofill'
-                    || (reEquip.length === 0
-                        && (mode === 'retain_item_else_prio' || mode === 'retain_slot_else_prio'))) {
-                    this.fillMateria(materiaAutoFillController.prio, false, [slot]);
-                }
-                else {
-                    const eq = this.equipment[slot];
-                    for (let i = 0; i < reEquip.length; i++) {
-                        if (i in eq.melds) {
-                            const meld = eq.melds[i];
-                            const materia = reEquip[i];
-                            if (materia && isMateriaAllowed(materia, meld.materiaSlot)) {
-                                meld.equippedMateria = reEquip[i];
-                            }
+                // We want to unconditionally restore locked materia
+                const eq = this.equipment[slot];
+                for (let i = 0; i < reEquip.length; i++) {
+                    if (i in eq.melds) {
+                        const meld = eq.melds[i];
+                        const req = reEquip[i];
+                        meld.locked = req.locked;
+                        const materia = req.materia;
+                        if (materia && isMateriaAllowed(materia, meld.materiaSlot)
+                            // We want to restore the materia if the slot is locked, or if the mode is not autofill
+                            && (meld.locked || mode !== 'autofill')) {
+                            meld.equippedMateria = materia;
                         }
                     }
+                }
 
+                // If the mode is 'autofill', unconditionally refill materia according to prio
+                // If the mode is 'retain_item_else_prio' or 'retain_slot_else_prio', only refill if either there
+                // was no memory whatsoever, or all slots were empty.
+                if (mode === 'autofill'
+                    || ((reEquip.length === 0 || !reEquip.find(re => re.materia !== null))
+                        && (mode === 'retain_item_else_prio' || mode === 'retain_slot_else_prio'))) {
+                    this.fillMateria(materiaAutoFillController.prio, false, [slot]);
                 }
             }
         }
         this.notifyListeners();
     }
 
+    toEquippedItem(item: GearItem): EquippedItem;
+    toEquippedItem(item: null): null;
+
     /**
      * Preview an item as if it were equipped
      *
      * @param item The item with relic stat memory and such applied
      */
-    toEquippedItem(item: GearItem) {
+    toEquippedItem(item: GearItem | null): EquippedItem | null {
         if (item === null) {
             return null;
         }
@@ -383,6 +484,8 @@ export class CharacterGearSet {
     }
 
     private notifyListeners() {
+        // This records a checkpoint and also triggers an eventual save.
+
         // TODO: a little janky. This is to work around an issue where by updating properties after importing, we
         // get an extra refresh request. Simple hack is to just refuse to issue any requests until we have at least
         // one listener.
@@ -400,15 +503,35 @@ export class CharacterGearSet {
         }
     }
 
+    /**
+     * Invalidate calculations for this set, and notify listeners that something has changed about the set, possibly
+     * triggering a UI refresh. This will typically also save and create an undo checkpoint.
+     */
     forceRecalc() {
         this.invalidate();
         this.notifyListeners();
     }
 
+    /**
+     * Notify listeners that something has changed, without invalidating. This will typically also save and create an
+     * undo checkpoint.
+     */
+    nonRecalcNotify() {
+        this.notifyListeners();
+    }
+
+    /**
+     * Add a listener, which will be called when modifications are made to this set.
+     * @param listener
+     */
     addListener(listener: () => void) {
         this.listeners.push(listener);
     }
 
+    /**
+     * Return the plain gear item in a slot.
+     * @param slot
+     */
     getItemInSlot(slot: keyof EquipmentSet): GearItem | null {
         const inSlot = this.equipment[slot];
         if (inSlot === null || inSlot === undefined) {
@@ -418,27 +541,43 @@ export class CharacterGearSet {
         return inSlot.gearItem;
     }
 
+    /**
+     * All items currently equipped (excluding food)
+     */
     get allEquippedItems(): XivCombatItem[] {
         return Object.values(this.equipment)
             .filter(slotEquipment => slotEquipment && slotEquipment.gearItem)
             .map((slotEquipment: EquippedItem) => slotEquipment.gearItem);
     }
 
+    /**
+     * Get a list of errors and warnings regarding this gear set.
+     */
     get issues(): readonly GearSetIssue[] {
         return this.results.issues;
     }
 
+    /**
+     * Get the computed stats of this set.
+     */
     get computedStats(): ComputedSetStats {
         return this.results.computedStats;
     }
 
+    get job(): JobName {
+        return this._jobOverride ?? this.sheet.classJobName;
+    }
+
+    /**
+     * Get the computed stats ({@link computedStats}) and issues ({@link issues}).
+     */
     get results(): GearSetResult {
         const issues: GearSetIssue[] = [];
         if (!this._dirtyComp) {
             return this._lastResult;
         }
         const combinedStats = new RawStats(EMPTY_STATS);
-        const classJob = this._jobOverride ?? this._sheet.classJobName;
+        const classJob = this.job;
         const classJobStats = this._jobOverride ? this._sheet.statsForJob(this._jobOverride) : this._sheet.classJobStats;
         const raceStats = this._raceOverride ? getRaceStats(this._raceOverride) : this._sheet.raceStats;
         const level = this._sheet.level;
@@ -473,14 +612,14 @@ export class CharacterGearSet {
         this._dirtyComp = false;
         // Add BLU weapon damage modifier
         combinedStats.wdMag += classJob === "BLU" ? bluWdfromInt(gearIntStat) : 0;
-        const computedStats = finalizeStats(combinedStats, this._food?.bonuses ?? {}, level, levelStats, classJob, classJobStats, this._sheet.partyBonus);
+        const computedStats = finalizeStats(combinedStats, this._food?.bonuses ?? {}, level, levelStats, classJob, classJobStats, this._sheet.partyBonus, this._sheet.race);
         const leftRing = this.getItemInSlot('RingLeft');
         const rightRing = this.getItemInSlot('RingRight');
         if (leftRing && leftRing.isUnique && rightRing && rightRing.isUnique) {
             if (leftRing.id === rightRing.id) {
                 issues.push({
                     severity: 'error',
-                    description: `You cannot equip ${leftRing.name} in both ring slots because it is a unique item.`,
+                    description: `You cannot equip ${leftRing.nameTranslation} in both ring slots because it is a unique item.`,
                 });
             }
         }
@@ -495,10 +634,33 @@ export class CharacterGearSet {
             computedStats: computedStats,
             issues: this.isSeparator ? [] : issues,
         };
-        //console.info("Recomputed stats", this._lastResult);
         return this._lastResult;
     }
 
+    /**
+     * Given a food item, get the actual bonuses it would provide.
+     *
+     * @param foodItem
+     */
+    getEffectiveFoodBonuses(foodItem: FoodItem): RawStats {
+        const stats = this.computedStats;
+        const finalized = finalizeStatsInt(
+            stats.gearStats,
+            foodItem.bonuses,
+            stats.level,
+            stats.levelStats,
+            stats.job,
+            stats.jobStats,
+            this.sheet.partyBonus
+        );
+        return finalized.effectiveFoodBonuses;
+    }
+
+    /**
+     * Get the effective stats and issues pertaining to a specific slot.
+     *
+     * @param slotId
+     */
     getSlotEffectiveStatsFull(slotId: EquipSlotKey): {
         stats: RawStats,
         issues: GearSetIssue[]
@@ -545,11 +707,24 @@ export class CharacterGearSet {
         return this.getSlotEffectiveStatsFull(slotId).stats;
     }
 
+    /**
+     * Compute the stat details for a specific slot and stat. Accepts an optional materiaOverride argument which allows you to
+     * "preview" the stats without actually equipping those materia.
+     * @param slotId
+     * @param stat
+     * @param materiaOverride
+     */
     getStatDetail(slotId: keyof EquipmentSet, stat: RawStatKey, materiaOverride?: Materia[]): ReturnType<typeof this.getEquipStatDetail> {
         const equip = this.equipment[slotId];
         return this.getEquipStatDetail(equip, stat, materiaOverride);
     }
 
+    /**
+     * Compute the stat details for a specific slot and stat, but also allows overriding the equipped item.
+     * @param equip
+     * @param stat
+     * @param materiaOverride
+     */
     getEquipStatDetail(equip: EquippedItem, stat: RawStatKey, materiaOverride?: Materia[]): ItemSingleStatDetail {
         const gearItem = equip.gearItem;
         if (!gearItem) {
@@ -682,7 +857,11 @@ export class CharacterGearSet {
                 const equipSlot = this.equipment[slotKey] as EquippedItem | null;
                 const gearItem = equipSlot?.gearItem;
                 if (gearItem) {
-                    equipSlot.melds.forEach(meldSlot => meldSlot.equippedMateria = null);
+                    equipSlot.melds.forEach(meldSlot => {
+                        if (!meldSlot.locked) {
+                            meldSlot.equippedMateria = null;
+                        }
+                    });
                 }
             }
             this.forceRecalc();
@@ -693,7 +872,7 @@ export class CharacterGearSet {
             if (gearItem) {
                 materiaLoop: for (const meldSlot of equipSlot.melds) {
                     // If overwriting, we already cleared the slots, so this check is fine in any scenario.
-                    if (meldSlot.equippedMateria) {
+                    if (meldSlot.equippedMateria || meldSlot.locked) {
                         continue;
                     }
                     const slotStats = this.getSlotEffectiveStats(slotKey);
@@ -747,18 +926,28 @@ export class CharacterGearSet {
         this.forceRecalc();
     }
 
+    /**
+     * Whether a stat is relevant to this set.
+     * @param stat
+     */
     isStatRelevant(stat: RawStatKey) {
         return this._sheet.isStatRelevant(stat);
     }
 
-    private collapsed: boolean;
-
+    /**
+     * Whether a particular slot should be collapsed on the UI.
+     * @param slotId
+     */
     isSlotCollapsed(slotId: EquipSlotKey) {
         return this.displaySettings.isSlotHidden(slotId);
     }
 
     setSlotCollapsed(slotId: EquipSlotKey, val: boolean) {
         this.displaySettings.setSlotHidden(slotId, val);
+    }
+
+    setAllSlotsCollapsed(val: boolean) {
+        this.displaySettings.setAllHidden(val);
     }
 
     /*
@@ -773,6 +962,14 @@ export class CharacterGearSet {
     When you roll back (or forward) to a checkpoint, notify listeners, and the callback.
     In addition, while performing a roll, _reverting is temporarily set to true, so that it doesn't try to checkpoint
     an undo/redo itself.
+
+    Furthermore, as this complicates the web of requestSave/invalidate/recordCheckpoint, the way this should work is:
+    If something makes a change that would require a recalculation, it should only call forceRecalc().
+    forceRecalc() will trigger everything - notifyListeners (which also results in a save), and recordCheckpoint.
+
+    If something makes a change that does not require a recalc (e.g. locking/unlocking a materia slot),
+    but still needs to be saved, then it should instead
+    call nonRecalcNotify, which results in a save + checkpoint but not a recalc.
      */
     readonly checkpointTimer = new Inactivitytimer(100, () => {
         this.recordCheckpointInt();
@@ -785,6 +982,7 @@ export class CharacterGearSet {
         const checkpoint: GearSetCheckpoint = {
             equipment: cloneEquipmentSet(this.equipment),
             food: this._food,
+            jobOverride: this._jobOverride,
         };
         const prev = this.currentCheckpoint;
         // Initial checkpoint
@@ -846,9 +1044,11 @@ export class CharacterGearSet {
         const newEquipment = cloneEquipmentSet(checkpoint.equipment);
         Object.assign(this.equipment, newEquipment);
         this._food = checkpoint.food;
+        if (checkpoint.jobOverride !== this._jobOverride) {
+            this.jobOverride = checkpoint.jobOverride;
+        }
         try {
             this.forceRecalc();
-            this.notifyListeners();
             this._undoHook();
         }
         finally {
@@ -857,7 +1057,9 @@ export class CharacterGearSet {
     }
 
     /**
-     * Perform an undo
+     * Perform an undo - i.e. restore this set's state to the previous checkpoint.
+     *
+     * If there was no previous checkpoint, returns false.
      */
     undo(): boolean {
         const prev = this.currentCheckpoint?.prev;
@@ -871,6 +1073,11 @@ export class CharacterGearSet {
         }
     }
 
+    /**
+     * Perform a redo - i.e. restore this set's state to the next checkpoint.
+     *
+     * If there was no previous checkpoint, returns false.
+     */
     redo(): boolean {
         const next = this.currentCheckpoint?.next;
         if (next) {
@@ -883,24 +1090,100 @@ export class CharacterGearSet {
         }
     }
 
+    /**
+     * Whether there is a previous checkpoint available.
+     */
     canUndo(): boolean {
         return this.currentCheckpoint?.prev?.value !== undefined;
     }
 
+    /**
+     * Whether there is a next checkpoint available.
+     */
     canRedo(): boolean {
         return this.currentCheckpoint?.next?.value !== undefined;
     }
+
+    /**
+     * Run a function against every equipment slot, regardless of whether anything is equipped or not.
+     *
+     * @param f The function. The first parameter is the EquipSlotKey, the second is the EquippedItem or null
+     * if nothing is equipped.
+     */
+    forEachSlot(f: (key: EquipSlotKey, item: EquippedItem | null) => void): void {
+        for (const equipmentKey of EquipSlots) {
+            const equipment: EquippedItem | null = this.equipment[equipmentKey];
+            f(equipmentKey, equipment);
+        }
+    }
+
+    /**
+     * Run a function against every equipment slot which has an item equipped.
+     *
+     * @param f The function. The first parameter is the EquipSlotKey, the second is the EquippedItem.
+     */
+    forEachEquippedItem(f: (key: EquipSlotKey, item: EquippedItem) => void): void {
+        this.forEachSlot((key, item) => {
+            if (item !== null) {
+                f(key, item);
+            }
+        });
+    }
+
+    /**
+     * Run a function against every materia slot on currently equipped gear.
+     *
+     * @param f The function. The first parameter is the EquipSlotKey, the second is the EquippedItem, third is the
+     * materia slot itself, and fourth is the index of the materia slot on the item.
+     */
+    forEachMateriaSlot(f: (key: EquipSlotKey, item: EquippedItem, slot: MeldableMateriaSlot, slotIndex: number) => void) {
+        this.forEachEquippedItem((key, item) => {
+            for (let i = 0; i < item.melds.length; i++) {
+                f(key, item, item.melds[i], i);
+            }
+        });
+    }
+
+    get avgIlvl(): number {
+        /*
+        Rules:
+        Empty slots count as zero.
+        BLU mainhand is ignored.
+        2H weapon counts as two slots.
+         */
+        // Rules: Empty slots count as 0
+        const values: number[] = [];
+        this.forEachSlot((key, itemMaybe) => {
+            if (key === 'Weapon' || key === 'OffHand') {
+                // These will be computed separately
+                return;
+            }
+            values.push(itemMaybe ? itemMaybe.gearItem.ilvl : 0);
+        });
+        // ignore BLU weapon
+        if (this.sheet.classJobName !== 'BLU') {
+            const weap = this.equipment.Weapon;
+            if (weap && weap.gearItem.occGearSlotName === 'Weapon2H') {
+                values.push(weap.gearItem.ilvl, weap.gearItem.ilvl);
+            }
+            else {
+                values.push(weap?.gearItem.ilvl ?? 0);
+                values.push(this.equipment.OffHand?.gearItem.ilvl ?? 0);
+            }
+        }
+        return values.reduce((a, b) => a + b) / values.length;
+    }
 }
 
-export function applyStatCaps(stats: RawStats, statCaps: { [K in RawStatKey]?: number }) {
+export function applyStatCaps(stats: RawStats, statCaps: { [K in RawStatKey]?: number }): RawStats {
     const out = {
         ...stats,
-    };
+    } as RawStats;
     Object.entries(stats).forEach(([stat, value]) => {
         if (NO_SYNC_STATS.includes(stat as RawStatKey)) {
             return;
         }
-        out[stat] = Math.min(value, statCaps[stat] ?? 999999);
+        out[stat as RawStatKey] = Math.min(value, statCaps[stat as RawStatKey] ?? 999999);
     });
     return out;
 }
@@ -957,7 +1240,7 @@ export function isSameOrBetterItem(candidateItem: GearItem, baseItem: GearItem):
     const candidateStats = candidateItem.stats;
     const baseStats = baseItem.stats;
     for (const [statKey, baseValue] of Object.entries(baseStats)) {
-        const candidateValue = candidateStats[statKey] as number;
+        const candidateValue = candidateStats[statKey as RawStatKey] as number;
         // For skill/spell speed, we want an exact match, since allowing extra sks/sps could cause
         // it to bump up a GCD tier.
         if (statKey as RawStatKey === 'skillspeed' || statKey as RawStatKey === 'spellspeed') {
@@ -999,3 +1282,13 @@ export function isSameOrBetterItem(candidateItem: GearItem, baseItem: GearItem):
 
     return true;
 }
+
+export type SyncInfo = {
+    lvlSync: number | null;
+} & ({
+    ilvlSync: null;
+    ilvlSyncIsExplicit: never;
+} | {
+    ilvlSync: number;
+    ilvlSyncIsExplicit: boolean;
+});

@@ -42,7 +42,7 @@ export const AeolianEdge: NinGcdAbility = {
     name: "Aeolian Edge",
     id: 2255,
     attackType: "Weaponskill",
-    potency: 440,
+    potency: 460,
     gcd: 2.5,
     cast: 0,
     updateGauge: (gauge: NINGauge) => {
@@ -64,7 +64,7 @@ export const ArmorCrush: NinGcdAbility = {
     name: "Armor Crush",
     id: 3563,
     attackType: "Weaponskill",
-    potency: 480,
+    potency: 500,
     gcd: 2.5,
     cast: 0,
     updateGauge: (gauge: NINGauge) => {
@@ -287,7 +287,7 @@ export const DreamWithin: NinOgcdAbility = {
     name: "Dream Within a Dream",
     id: 3566,
     attackType: "Ability",
-    potency: 150 * 3, // Multihit
+    potency: 180 * 3, // Multihit
 };
 
 export const Bhavacakra: NinkiAbility = {
@@ -295,7 +295,7 @@ export const Bhavacakra: NinkiAbility = {
     name: "Bhavacakra",
     id: 7402,
     attackType: "Ability",
-    potency: 380,
+    potency: 400,
     updateGauge: gauge => gauge.ninkiGauge -= 50,
     ninkiCost: 50,
 };

@@ -1,20 +1,38 @@
-import {arrayEq, getHash, goHash, isEmbed, processHashLegacy, processNav, setHash} from "./nav_hash";
+import {getCurrentState, getHash, goPath, isEmbed, processHashLegacy, processNav, setPath} from "./nav_hash";
 import {NamedSection} from "./components/section";
 import {NewSheetForm} from "./components/new_sheet_form";
 import {ImportSheetArea} from "./components/import_sheet";
 import {SetExport, SheetExport} from "@xivgear/xivmath/geartypes";
-import {displayEmbedError, openEmbed} from "./embed";
-import {SETTINGS} from "./settings/persistent_settings";
+import {getEmbedDiv, openEmbed} from "./embed";
 import {LoadingBlocker} from "@xivgear/common-ui/components/loader";
 import {SheetPickerTable} from "./components/saved_sheet_picker";
-import {DISPLAY_SETTINGS} from "./settings/display_settings";
-import {showSettingsModal} from "./settings/settings_modal";
 import {GearPlanSheetGui, GRAPHICAL_SHEET_PROVIDER} from "./components/sheet";
-import {splitPath} from "@xivgear/core/nav/common_nav";
+import {makeUrl, NavState, splitPath} from "@xivgear/core/nav/common_nav";
 import {applyCommonTopMenuFormatting} from "@xivgear/common-ui/components/top_menu";
-import {recordSheetEvent} from "@xivgear/core/analytics/analytics";
-import { workerPool } from "./workers/worker_pool";
+import {WORKER_POOL} from "./workers/worker_pool";
+import {showSettingsModal} from "@xivgear/common-ui/settings/settings_modal";
+import {SETTINGS} from "@xivgear/common-ui/settings/persistent_settings";
+import {DISPLAY_SETTINGS} from "@xivgear/common-ui/settings/display_settings";
+import {arrayEq} from "@xivgear/util/array_utils";
+import {extractSingleSet} from "@xivgear/core/util/sheet_utils";
+import {CharacterGearSet} from "@xivgear/core/gear";
+import {recordSheetEvent} from "./analytics/analytics";
+import {recordError} from "@xivgear/common-ui/analytics/analytics";
+import {isInIframe} from "@xivgear/common-ui/util/detect_iframe";
+import {WritableProps} from "@xivgear/common-ui/util/types";
+import {quickElement} from "@xivgear/common-ui/components/util";
 
+declare global {
+    interface Document {
+        planner?: GearPlanSheetGui;
+    }
+
+    // noinspection JSUnusedGlobalSymbols
+    interface Window {
+        currentSheet?: GearPlanSheetGui;
+        currentGearSet?: CharacterGearSet;
+    }
+}
 const pageTitle = 'XivGear - FFXIV Gear Planner';
 
 export async function initialLoad() {
@@ -56,9 +74,48 @@ export function hideWelcomeArea() {
     welcomeArea.style.display = 'none';
 }
 
-export function setMainContent(title: string, ...nodes) {
+export function setMainContent(title: string, ...nodes: Parameters<ParentNode['replaceChildren']>) {
     contentArea.replaceChildren(...nodes);
     setTitle(title);
+}
+
+function showBadEmbedAttemptError() {
+    const currentState = getCurrentState();
+    const newUrl = makeUrl(new NavState(currentState.path.slice(1), currentState.onlySetIndex, currentState.selectIndex));
+    const msg = "Embedding is only supported for a single set, not a full sheet. Consider embedding sets individually and/or linking to the full sheet rather than embedding it.";
+    showFatalError(msg, [
+        makeLink('Click to open this sheet', newUrl, {target: '_blank'}),
+        quickElement('br', [], []),
+        quickElement('small', [], [msg]),
+    ]);
+}
+
+
+function makeLink(text: string, href: URL, opts: Partial<WritableProps<HTMLAnchorElement>>) {
+    const a = document.createElement('a');
+    a.textContent = text;
+    a.href = href.toString();
+    Object.assign(a, opts);
+    return a;
+}
+
+export function showFatalError(errorText: string, errorElementContents?: Parameters<ParentNode['replaceChildren']>) {
+    recordError("showFatalError", errorText);
+    const errMsg = document.createElement('h1');
+    if (errorElementContents !== undefined) {
+        errMsg.replaceChildren(...errorElementContents);
+    }
+    else {
+        errMsg.textContent = errorText;
+    }
+    const embedDiv = getEmbedDiv();
+    if (embedDiv !== undefined) {
+        setTitle("Error");
+        embedDiv.replaceChildren(errMsg);
+    }
+    else {
+        setMainContent("Error", errMsg);
+    }
 }
 
 export function initTopMenu() {
@@ -67,13 +124,14 @@ export function initTopMenu() {
         if (href?.startsWith('?page=')) {
             link.addEventListener('click', e => {
                 e.preventDefault();
-                goHash(...splitPath(href.slice(6)));
+                goPath(...splitPath(href.slice(6)));
             });
         }
     });
 }
 
-export function formatTopMenu(hash: string[]) {
+export function formatTopMenu(nav: NavState) {
+    const hash = nav.path;
     topMenuArea.querySelectorAll('a').forEach(link => {
         const href = link.getAttribute('href');
         applyCommonTopMenuFormatting(link);
@@ -95,7 +153,7 @@ export function showLoadingScreen() {
 }
 
 export function showNewSheetForm() {
-    setHash('newsheet');
+    setPath('newsheet');
     const section = new NamedSection('New Gear Planning Sheet');
     const form = new NewSheetForm(openSheet);
     section.contentArea.replaceChildren(form);
@@ -104,9 +162,9 @@ export function showNewSheetForm() {
 }
 
 export function showImportSheetForm() {
-    setHash('importsheet');
+    setPath('importsheet');
     setMainContent('Import Sheet', new ImportSheetArea(async sheet => {
-        setHash('imported');
+        setPath('imported');
         openSheet(sheet, false);
     }));
 }
@@ -134,10 +192,58 @@ export async function openSheetByKey(sheet: string) {
     }
 }
 
-export async function openExport(exported: (SheetExport | SetExport), changeHash: boolean, viewOnly: boolean) {
+type OriginalSheetBacklinkData = {
+    sheetName: string,
+    sheetUrl: URL,
+}
+
+export async function openExport(exportedPre: SheetExport | SetExport, viewOnly: boolean, onlySetIndex: number | undefined, defaultSelectionIndex: number | undefined) {
+    const exportedInitial = exportedPre;
+    const initiallyFullSheet = 'sets' in exportedInitial;
+    let backlink: OriginalSheetBacklinkData = null;
+    if (onlySetIndex !== undefined) {
+        if (!initiallyFullSheet) {
+            console.warn("onlySetIndex does not make sense when isFullSheet is false");
+        }
+        else {
+            const navState = getCurrentState();
+            backlink = {
+                sheetName: exportedInitial.name,
+                sheetUrl: makeUrl(new NavState(navState.path, undefined, navState.onlySetIndex)),
+            };
+            exportedPre = extractSingleSet(exportedInitial, onlySetIndex);
+            if (exportedPre === undefined) {
+                showFatalError(`Error: Set index ${onlySetIndex} is not valid.`);
+                throw new Error(`Error: Set index ${onlySetIndex} is not valid.`);
+            }
+        }
+    }
+    const exported = exportedPre;
     const isFullSheet = 'sets' in exported;
     const sheet = isFullSheet ? GRAPHICAL_SHEET_PROVIDER.fromExport(exported) : GRAPHICAL_SHEET_PROVIDER.fromSetExport(exported);
+    if (defaultSelectionIndex !== undefined) {
+        sheet.defaultSelectionIndex = defaultSelectionIndex;
+    }
     const embed = isEmbed();
+    if (isInIframe()) {
+        const extraData: {
+            topLocation?: string,
+            referrer?: string,
+        } = {};
+        try {
+            extraData['topLocation'] = window.top.location.hostname;
+        }
+        catch (e) {
+            // Ignored
+        }
+        if (document.referrer) {
+            extraData['referrer'] = document.referrer;
+        }
+        recordSheetEvent('iframe', sheet, extraData);
+        if (!isEmbed()) {
+            recordSheetEvent('nonEmbeddedIframe', sheet, extraData);
+        }
+    }
     const analyticsData = {
         'isEmbed': embed,
         'viewOnly': viewOnly,
@@ -146,7 +252,7 @@ export async function openExport(exported: (SheetExport | SetExport), changeHash
     recordSheetEvent('openExport', sheet, analyticsData);
     if (embed) {
         if (isFullSheet) {
-            displayEmbedError("Embedding is only supported for a single set, not a full sheet. Consider embedding sets individually and/or linking to the full sheet rather than embedding it.");
+            showBadEmbedAttemptError();
         }
         else {
             sheet.setViewOnly();
@@ -155,6 +261,9 @@ export async function openExport(exported: (SheetExport | SetExport), changeHash
     }
     else {
         if (viewOnly) {
+            if (backlink !== null) {
+                sheet.configureBacklinkArea(backlink.sheetName, backlink.sheetUrl);
+            }
             sheet.setViewOnly();
         }
         // sheet.name = SHARED_SET_NAME;
@@ -169,10 +278,10 @@ export function getHashForSaveKey(saveKey: string) {
 export async function openSheet(planner: GearPlanSheetGui, changeHash: boolean = true) {
     setTitle('Loading Sheet');
     console.log('openSheet: ', planner.saveKey);
-    document['planner'] = planner;
-    window['currentSheet'] = planner;
+    document.planner = planner;
+    window.currentSheet = planner;
     if (changeHash) {
-        setHash("sheet", planner.saveKey, "dont-copy-this-link", "use-the-export-button");
+        setPath("sheet", planner.saveKey, "dont-copy-this-link", "use-the-export-button");
     }
     contentArea.replaceChildren(planner.topLevelElement);
     const oldHash = getHash();
@@ -188,10 +297,12 @@ export async function openSheet(planner: GearPlanSheetGui, changeHash: boolean =
         }
     }, (reason) => {
         console.error(reason);
-        contentArea.replaceChildren(document.createTextNode("Error loading sheet!"));
+        recordError("load", reason);
+        showFatalError("Error Loading Sheet!");
     });
     await loadSheetPromise;
-    await workerPool.initializeWorkers(planner);
+    // TODO: does this visibly slow down sheet access?
+    await WORKER_POOL.setSheet(planner);
 }
 
 export function showSheetPickerMenu() {
@@ -233,7 +344,7 @@ export function earlyUiSetup() {
     nukeButton.addEventListener('click', (ev) => {
         if (confirm('This will DELETE ALL sheets, sets, and settings.')) {
             localStorage.clear();
-            setHash();
+            setPath();
             location.reload();
         }
     });

@@ -1,9 +1,9 @@
-import { JOB_DATA, JobName } from "@xivgear/xivmath/xivconstants";
-import { CycleSettings } from "@xivgear/core/sims/cycle_settings";
-import { CharacterGearSet } from "@xivgear/core/gear";
-import { sum } from "@xivgear/core/util/array_utils";
-import { addValues, applyStdDev, multiplyFixed } from "@xivgear/xivmath/deviation";
-import { PartyBuff, SimSettings, SimSpec, Simulation } from "@xivgear/core/sims/sim_types";
+import {JOB_DATA, JobName} from "@xivgear/xivmath/xivconstants";
+import {CycleSettings} from "@xivgear/core/sims/cycle_settings";
+import {CharacterGearSet} from "@xivgear/core/gear";
+import {arrayEq, sum} from "@xivgear/util/array_utils";
+import {addValues, applyStdDev, multiplyFixed} from "@xivgear/xivmath/deviation";
+import {PartyBuff, SimSettings, SimSpec, Simulation} from "@xivgear/core/sims/sim_types";
 import {
     CutoffMode,
     CycleProcessor,
@@ -16,14 +16,16 @@ import {
     ResultSettings,
     Rotation
 } from "@xivgear/core/sims/cycle_sim";
-import { BuffSettingsManager } from "@xivgear/core/sims/common/party_comp_settings";
+import {BuffSettingsManager} from "@xivgear/core/sims/common/party_comp_settings";
+
+export type RotationCacheKey = (number | boolean | string)[];
 
 /**
  * Base class for a CycleProcessor based simulation. You should extend this class,
  * and provide your own generic types.
  */
 export abstract class BaseMultiCycleSim<ResultType extends CycleSimResult, InternalSettingsType extends SimSettings, CycleProcessorType extends CycleProcessor = CycleProcessor, FullResultType extends CycleSimResultFull<ResultType> = CycleSimResultFull<ResultType>>
-implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSettings<InternalSettingsType>> {
+    implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSettings<InternalSettingsType>> {
 
     abstract displayName: string;
     abstract shortName: string;
@@ -50,7 +52,8 @@ implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSetting
     readonly manualRun = false;
 
     private cachedCycleProcessors: [string, CycleProcessor][];
-    private cachedSpeed: number;
+    private cachedRotationKey: RotationCacheKey | undefined;
+
     protected constructor(public readonly job: JobName, settings?: ExternalCycleSettings<InternalSettingsType>) {
         this.settings = this.makeDefaultSettings();
         if (settings !== undefined) {
@@ -131,7 +134,7 @@ implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSetting
     };
 
 
-    generateRotations(set: CharacterGearSet): [string, CycleProcessor][] {
+    generateRotations(set: CharacterGearSet, simple: boolean = false): [string, CycleProcessor][] {
 
         const allBuffs = this.buffManager.enabledBuffs;
         const rotations = this.getRotationsToSimulate(set);
@@ -145,10 +148,29 @@ implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSetting
                 manuallyActivatedBuffs: this.manuallyActivatedBuffs ?? [],
                 useAutos: (this.cycleSettings.useAutos ?? true) && set.getItemInSlot('Weapon') !== null,
                 cutoffMode: this.cycleSettings.cutoffMode,
+                simpleMode: simple,
             });
             rot.apply(cp);
             return [rot.name ?? `Unnamed #${index + 1}`, cp];
         });
+    }
+
+    calcDamageSimple(set: CharacterGearSet): number {
+        const allResults = this.cachedCycleProcessors.map(item => {
+            const cp = item[1];
+            cp.stats = set.computedStats;
+            const used = cp.finalizedRecords.filter(isFinalizedAbilityUse);
+            const totalDamage = addValues(...used.map(used => used.totalDamageFull));
+            const timeBasis = cp.finalizedTimeBasis;
+            const dps = multiplyFixed(totalDamage, 1.0 / timeBasis);
+
+            return applyStdDev(dps, this.resultSettings.stdDevs ?? 0);
+        });
+        const sorted = [...allResults];
+        sorted.sort((a, b) => b - a);
+        console.debug("Sim end");
+        const best = sorted[0];
+        return best;
     }
 
     calcDamage(set: CharacterGearSet): FullResultType {
@@ -188,14 +210,45 @@ implements Simulation<FullResultType, InternalSettingsType, ExternalCycleSetting
         };
     }
 
+    protected computeCacheKey(set: CharacterGearSet): RotationCacheKey {
+        const stats = set.computedStats;
+        const sps = stats.spellspeed;
+        const sks = stats.skillspeed;
+        const wdly = stats.weaponDelay;
+        return [sps, sks, wdly];
+    }
+
     async simulate(set: CharacterGearSet): Promise<FullResultType> {
         console.debug("Sim start");
-        const setSpeed = set.isStatRelevant('spellspeed') ? set.computedStats.spellspeed : set.computedStats.skillspeed;
-        if (setSpeed !== this.cachedSpeed) {
+        const cacheKey = this.computeCacheKey(set);
+        if (!arrayEq(this.cachedRotationKey, cacheKey)) {
             this.cachedCycleProcessors = this.generateRotations(set);
-            this.cachedSpeed = setSpeed;
+            this.cachedRotationKey = cacheKey;
         }
         return this.calcDamage(set);
     };
+
+    async simulateSimple(set: CharacterGearSet): Promise<number> {
+        console.debug("Sim start");
+        const cacheKey = this.computeCacheKey(set);
+        if (!arrayEq(this.cachedRotationKey, cacheKey)) {
+            // console.error(`cache MISS: ${this.cachedRotationKey} => ${cacheKey}`);
+            this.cachedCycleProcessors = this.generateRotations(set, true);
+            this.cachedRotationKey = cacheKey;
+        }
+        // else {
+        //     console.error("cache HIT");
+        // }
+        return this.calcDamageSimple(set);
+    };
+
+    settingsChanged() {
+        this.invalidateCaches();
+    }
+
+    invalidateCaches() {
+        this.cachedCycleProcessors = [];
+        this.cachedRotationKey = undefined;
+    }
 
 }

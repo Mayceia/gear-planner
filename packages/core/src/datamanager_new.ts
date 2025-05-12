@@ -27,19 +27,36 @@ import {
 import {BaseParamToStatKey, RelevantBaseParam} from "./external/xivapitypes";
 import {getRelicStatModelFor} from "./relicstats/relicstats";
 import {requireNumber, requireString} from "./external/data_validators";
-import {DataApiClient, FoodStatBonus, GearAcquisitionSource as AcqSrc} from "@xivgear/data-api-client/dataapi";
-import {BaseParamMap, DataManager} from "./datamanager";
+import {
+    DataApiClient,
+    FoodStatBonus,
+    GearAcquisitionSource as AcqSrc,
+    HttpResponse
+} from "@xivgear/data-api-client/dataapi";
+import {BaseParamMap, DataManager, DmJobs} from "./datamanager";
 import {IlvlSyncInfo} from "./datamanager_xivapi";
 import {applyStatCaps} from "./gear";
+import {toTranslatable, TranslatableString} from "@xivgear/i18n/translation";
+import {RawStatsPart} from "@xivgear/util/types";
+// import {recordError} from "@xivgear/common-ui/analytics/analytics";
 
 type ApiClientRawType<X extends keyof DataApiClient<never>, Y extends keyof DataApiClient<never>[X]> = DataApiClient<never>[X][Y]
 
-type ItemType = Awaited<ReturnType<ApiClientRawType<'items', 'items'>>>['data']['items'][number]
-type MateriaType = Awaited<ReturnType<ApiClientRawType<'materia', 'materia'>>>['data']['items'][number]
-type FoodType = Awaited<ReturnType<ApiClientRawType<'food', 'foodItems'>>>['data']['items'][number]
+type ApiItemData = Awaited<ReturnType<ApiClientRawType<'items', 'items'>>>['data']['items'][number]
+type ApiMateriaData = Awaited<ReturnType<ApiClientRawType<'materia', 'materia'>>>['data']['items'][number]
+type ApiFoodData = Awaited<ReturnType<ApiClientRawType<'food', 'foodItems'>>>['data']['items'][number]
 // type BaseParamType = Awaited<ReturnType<ApiClientRawType<'baseParams', 'baseParams'>>>['data']['items'][number]
 // type JobType = Awaited<ReturnType<ApiClientRawType<'jobs', 'jobs'>>>['data']['items'][number]
 // type ItemLevelType = Awaited<ReturnType<ApiClientRawType<'itemLevel', 'itemLevels'>>>['data']['items'][number]
+
+export type DataManagerErrorReporter = (r: Response, params: Parameters<typeof fetch>) => void;
+
+let errorReporter: DataManagerErrorReporter = () => {
+};
+
+export function setDataManagerErrorReporter(reporter: DataManagerErrorReporter) {
+    errorReporter = reporter;
+}
 
 async function retryFetch(...params: Parameters<typeof fetch>): Promise<Response> {
     let tries = 5;
@@ -55,7 +72,16 @@ async function retryFetch(...params: Parameters<typeof fetch>): Promise<Response
         if (result.status >= 400) {
             const content = JSON.stringify(await result.json());
             console.error(`Data API error: ${result.status}: ${result.statusText}`, params[0], content);
-            throw Error(`Data API error: ${result.status}: ${result.statusText} (${params[0]}\n${content}`);
+            const error = Error(`Data API error: ${result.status}: ${result.statusText} (${params[0]}\n${content}`);
+            // TODO: it would be nice to be able to record these, but they would create an unacceptable
+            // dependency loop.
+            // recordError("datamanager", error, {fetchUrl: String(params[0])});
+            throw error;
+        }
+        if (!result.ok) {
+            console.error(`Data API error: ${result.status}: ${result.statusText}`, params[0]);
+            errorReporter(result, params);
+            throw new Error(`Data API error: ${result.status}: ${result.statusText} (${params[0]}`);
         }
         return result;
     }
@@ -72,6 +98,19 @@ export function setDataApi(baseUrl: string) {
     apiClient.baseUrl = baseUrl;
 }
 
+function checkResponse<X extends HttpResponse<unknown>>(response: X): X {
+    const url = response.url;
+    if (!response.ok) {
+        errorReporter(response, [url]);
+        throw new Error(`Data API error: response not ok: ${response.status}: ${response.statusText} (${url}`);
+    }
+    else if (!response.data) {
+        errorReporter(response, [url]);
+        throw new Error(`Data API error: no data: ${response.status}: ${response.statusText} (${url}`);
+    }
+    return response;
+}
+
 export class NewApiDataManager implements DataManager {
 
     private readonly _minIlvl: number;
@@ -79,12 +118,14 @@ export class NewApiDataManager implements DataManager {
     private readonly _minIlvlFood: number;
     private readonly _maxIlvlFood: number;
     private readonly _classJob: JobName;
+    private readonly _allJobs: JobName[];
     private readonly _level: SupportedLevel;
     private readonly _ilvlSync: number | undefined;
     private readonly apiClient: DataApiClient<never>;
 
-    public constructor(classJob: JobName, level: SupportedLevel, ilvlSync?: number | undefined) {
-        this._classJob = classJob;
+    public constructor(classJobs: DmJobs, level: SupportedLevel, ilvlSync?: number | undefined) {
+        this._classJob = classJobs[0];
+        this._allJobs = [...classJobs];
         this._level = level;
         const lvlData = LEVEL_ITEMS[this._level];
         this._minIlvl = lvlData.minILvl;
@@ -114,7 +155,7 @@ export class NewApiDataManager implements DataManager {
             this._isyncPromise = Promise.all([baseParamPromise, this.apiClient.itemLevel.itemLevels()]).then(responses => {
                 const outMap = new Map<number, IlvlSyncInfo>();
                 const jobStats = getClassJobStats(this._classJob);
-                for (const row of responses[1].data.items) {
+                for (const row of checkResponse(responses[1]).data.items) {
                     const ilvl = row.rowId;
                     // Unroll the ItemLevel object into a direct mapping from RawStatKey => modifier
                     // BaseParam data is trickier. First, we need to convert from a list to a map, where the keys are the stat.
@@ -179,6 +220,8 @@ export class NewApiDataManager implements DataManager {
 
                             }
                             const baseParamModifier = baseParams[statsKey as RawStatKey][slot];
+                            // Theoretically, this is safe even for multi-job because the item stat cap multipliers
+                            // are role-bound.
                             const jobCap = jobStats.itemStatCapMultipliers?.[statsKey];
                             if (jobCap !== undefined) {
                                 return Math.round(jobCap * Math.round(ilvlModifier * baseParamModifier / 1000));
@@ -204,8 +247,10 @@ export class NewApiDataManager implements DataManager {
         }
     }
 
-    itemById(id: number): (GearItem | undefined) {
-        return this._allItems.find(item => item.id === id);
+    itemById(id: number, forceNq: boolean = false): (GearItem | undefined) {
+        return this._allItems.find(item => {
+            return item.id === id && item.isNqVersion === forceNq;
+        });
     }
 
     materiaById(id: number): (Materia | undefined) {
@@ -221,8 +266,9 @@ export class NewApiDataManager implements DataManager {
 
 
     async loadData() {
-        const baseParamPromise = this.queryBaseParams().then(data => {
-            this._baseParams = data.data.items.reduce<{
+        const baseParamPromise = this.queryBaseParams().then(response => {
+            checkResponse(response);
+            this._baseParams = response.data.items.reduce<{
                 [rawStat in RawStatKey]?: Record<OccGearSlotKey, number>
             }>((baseParams, value) => {
                 // Each individual item also gets converted
@@ -242,22 +288,17 @@ export class NewApiDataManager implements DataManager {
                 };
                 return baseParams;
             }, {});
-            return data;
+            return response;
         });
-        const extraPromises = [];
+        const extraPromises: Promise<unknown>[] = [];
         console.log("Loading items");
 
 
-        const itemsPromise = this.apiClient.items.items({job: this._classJob})
-            .then(async (data) => {
-                if (data) {
-                    console.log(`Got ${data.data.items.length} Items`);
-                    return data.data.items;
-                }
-                else {
-                    console.error(`Got No Items!`);
-                    return null;
-                }
+        const itemsPromise = this.apiClient.items.items({job: this._allJobs})
+            .then(async (response) => {
+                checkResponse(response);
+                console.log(`Got ${response.data.items.length} Items`);
+                return response.data.items;
             }).then((rawItems) => {
                 this._allItems = rawItems
                     .filter(i => {
@@ -271,7 +312,14 @@ export class NewApiDataManager implements DataManager {
                             throw e;
                         }
                     })
-                    .map(i => new DataApiGearInfo(i));
+                    .flatMap(i => {
+                        if (i.canBeHq) {
+                            return [new DataApiGearInfo(i), new DataApiGearInfo(i, true)];
+                        }
+                        else {
+                            return [new DataApiGearInfo(i)];
+                        }
+                    });
                 this._maxIlvlForEquipLevel = new Map();
                 this._maxIlvlForEquipLevelWeapon = new Map();
                 this._allItems.forEach(item => {
@@ -284,7 +332,7 @@ export class NewApiDataManager implements DataManager {
                     }
                 });
                 // TODO: put up better error
-            }, (e) => console.error(e));
+            });
         const statsPromise = Promise.all([itemsPromise, baseParamPromise]).then(() => {
             console.log(`Finishing item calculations for ${this._allItems.length} items`);
             this._allItems.forEach(item => {
@@ -315,29 +363,24 @@ export class NewApiDataManager implements DataManager {
         // Materia
         console.log("Loading materia");
         const materiaPromise = this.apiClient.materia.materia()
-            .then((data) => {
-                if (data) {
-                    console.log(`Got ${data.data.items.length} Materia Types`);
-                    this._allMateria = data.data.items
-                        // TODO: if a materia is discontinued but should still be available for old
-                        // sets, this will not work.
-                        .filter(i => i.value[MATERIA_LEVEL_MAX_NORMAL - 1])
-                        .flatMap(item => {
-                            return processRawMateriaInfo(item);
-                        });
-                    console.log(`Processed ${this._allMateria.length} total Materia items`);
-                }
-                else {
-                    console.error('Got No Materia!');
-                }
-            }, e => {
-                console.error(e);
+            .then((response) => {
+                checkResponse(response);
+                console.log(`Got ${response.data.items.length} Materia Types`);
+                this._allMateria = response.data.items
+                    // TODO: if a materia is discontinued but should still be available for old
+                    // sets, this will not work.
+                    .filter(i => i.value[MATERIA_LEVEL_MAX_NORMAL - 1])
+                    .flatMap(item => {
+                        return processRawMateriaInfo(item);
+                    });
+                console.log(`Processed ${this._allMateria.length} total Materia items`);
             });
         console.log("Loading food");
         const foodPromise = this.apiClient.food.foodItems()
-            .then((data) => {
-                console.log(`Got ${data.data.items.length} Food Items`);
-                return data.data.items;
+            .then((response) => {
+                checkResponse(response);
+                console.log(`Got ${response.data.items.length} Food Items`);
+                return response.data.items;
             })
             .then((rawFoods) => {
                 return rawFoods.map(item => {
@@ -346,13 +389,13 @@ export class NewApiDataManager implements DataManager {
                 });
             })
             .then((processedFoods) => processedFoods.filter(food => Object.keys(food.bonuses).length > 1))
-            .then((foods) => this._allFoodItems = foods,
-                e => console.error(e));
+            .then((foods) => this._allFoodItems = foods);
         console.log("Loading jobs");
         const jobsPromise = this.apiClient.jobs.jobs()
-            .then(data => {
-                console.log(`Got ${data.data.items.length} Jobs`);
-                return data.data.items;
+            .then(response => {
+                checkResponse(response);
+                console.log(`Got ${response.data.items.length} Jobs`);
+                return response.data.items;
             })
             .then(rawJobs => {
                 this._jobMultipliers = new Map<JobName, JobMultipliers>();
@@ -367,6 +410,7 @@ export class NewApiDataManager implements DataManager {
                     });
                 }
             });
+        // These will all resolve at the same time, so it doesn't matter which one we await
         const ilvlPromise = this.getIlvlSyncData(baseParamPromise, 710);
         await Promise.all([baseParamPromise, itemsPromise, statsPromise, materiaPromise, foodPromise, jobsPromise, ilvlPromise]);
         await Promise.all(extraPromises);
@@ -423,12 +467,20 @@ export class NewApiDataManager implements DataManager {
         return this._level;
     }
 
-    get classJob(): JobName {
+    get primaryClassJob(): JobName {
         return this._classJob;
+    }
+
+    get allClassJobs(): JobName[] {
+        return [...this._allJobs];
     }
 
     getIlvlSyncInfo(ilvl: number): IlvlSyncInfo | undefined {
         return this._isyncData.get(ilvl);
+    }
+
+    getImplicitIlvlSync(level: number, isWeapon: boolean): number | undefined {
+        return (isWeapon ? this._maxIlvlForEquipLevelWeapon : this._maxIlvlForEquipLevel).get(level);
     }
 }
 
@@ -436,6 +488,7 @@ export class NewApiDataManager implements DataManager {
 export class DataApiGearInfo implements GearItem {
     readonly id: number;
     readonly name: string;
+    readonly nameTranslation: TranslatableString;
     readonly iconUrl: URL;
     readonly equipLvl: number;
     readonly ilvl: number;
@@ -450,16 +503,28 @@ export class DataApiGearInfo implements GearItem {
     readonly isUnique: boolean;
     unsyncedVersion: DataApiGearInfo;
     readonly acquisitionType: GearAcquisitionSource;
+    readonly jobs: JobName[];
     statCaps: {
         [K in RawStatKey]?: number
     };
     isSyncedDown: boolean;
     relicStatModel: RelicStatModel;
     syncedDownTo: number | null;
+    isNqVersion: boolean;
+    readonly rarity: number;
 
-    constructor(data: ItemType) {
+    constructor(data: ApiItemData, forceNq: boolean = false) {
+        this.jobs = data.classJobs as JobName[];
+        this.isNqVersion = forceNq;
         this.id = data.rowId;
-        this.name = data.name;
+        if (forceNq) {
+            this.name = '(NQ) ' + data.name;
+            this.nameTranslation = toTranslatable(data.name, data.nameTranslations, i => `(NQ) ${i}`);
+        }
+        else {
+            this.name = data.name;
+            this.nameTranslation = toTranslatable(data.name, data.nameTranslations);
+        }
         this.equipLvl = data.equipLevel;
         this.ilvl = data.ilvl;
         this.iconUrl = new URL(data.icon.pngIconUrl);
@@ -522,17 +587,18 @@ export class DataApiGearInfo implements GearItem {
         this.displayGearSlot = this.displayGearSlotName ? DisplayGearSlotInfo[this.displayGearSlotName] : undefined;
         const weaponDelayRaw = (data.delayMs);
         this.stats = new RawStats();
-        this.stats.wdPhys = (data.damagePhysHQ);
-        this.stats.wdMag = (data.damageMagHQ);
+        this.stats.wdPhys = forceNq ? data.damagePhys : data.damagePhysHQ;
+        this.stats.wdMag = forceNq ? data.damageMag : data.damageMagHQ;
         this.stats.weaponDelay = weaponDelayRaw ? (weaponDelayRaw / 1000.0) : 0;
-        for (const key in data.baseParamMapHQ) {
+        const paramMap = forceNq ? data.baseParamMap : data.baseParamMapHQ;
+        for (const key in paramMap) {
             const intKey = parseInt(key);
             const baseParam = statById(intKey);
             if (baseParam === undefined) {
                 // console.warn(`Undefined baseParam! ${key}`);
                 continue;
             }
-            this.stats[baseParam] = data.baseParamMapHQ[key];
+            this.stats[baseParam] = paramMap[key];
         }
         this.isUnique = data.unique;
         this.computeSubstats();
@@ -639,6 +705,7 @@ export class DataApiGearInfo implements GearItem {
                 this.acquisitionType = 'other';
                 break;
         }
+        this.rarity = data.rarity;
     }
 
     private computeSubstats() {
@@ -673,9 +740,10 @@ export class DataApiGearInfo implements GearItem {
     }
 
     applyIlvlData(nativeIlvlInfo: IlvlSyncInfo, syncIlvlInfo?: IlvlSyncInfo, level?: number) {
-        const statCapsNative = {};
+        const statCapsNative: RawStatsPart = {};
         Object.entries(this.stats).forEach(([stat, _]) => {
-            statCapsNative[stat] = nativeIlvlInfo.substatCap(this.occGearSlotName, stat as RawStatKey);
+            const rsk = stat as RawStatKey;
+            statCapsNative[rsk] = nativeIlvlInfo.substatCap(this.occGearSlotName, rsk);
         });
         this.statCaps = statCapsNative;
         if (syncIlvlInfo && (syncIlvlInfo.ilvl < this.ilvl || level < this.equipLvl)) {
@@ -684,9 +752,10 @@ export class DataApiGearInfo implements GearItem {
             };
             this.syncedDownTo = syncIlvlInfo.ilvl;
             this.materiaSlots = [];
-            const statCapsSync = {};
+            const statCapsSync: RawStatsPart = {};
             Object.entries(this.stats).forEach(([stat, v]) => {
-                statCapsSync[stat] = syncIlvlInfo.substatCap(this.occGearSlotName, stat as RawStatKey);
+                const rsk = stat as RawStatKey;
+                statCapsSync[rsk] = syncIlvlInfo.substatCap(this.occGearSlotName, rsk);
             });
             this.stats = applyStatCaps(this.stats, statCapsSync);
             this.statCaps = statCapsSync;
@@ -698,6 +767,10 @@ export class DataApiGearInfo implements GearItem {
             this.syncedDownTo = null;
             this.isSyncedDown = false;
         }
+    }
+
+    usableByJob(job: JobName): boolean {
+        return this.jobs.includes(job);
     }
 }
 
@@ -711,15 +784,17 @@ export class DataApiFoodInfo implements FoodItem {
     iconUrl: URL;
     id: number;
     name: string;
+    readonly nameTranslation: TranslatableString;
     ilvl: number;
     primarySubStat: RawStatKey | undefined;
     secondarySubStat: RawStatKey | undefined;
 
-    constructor(data: FoodType) {
+    constructor(data: ApiFoodData) {
         this.id = requireNumber(data.rowId);
         this.name = requireString(data.name);
         this.iconUrl = new URL(data.icon.pngIconUrl);
         this.ilvl = requireNumber(data.levelItem);
+        this.nameTranslation = toTranslatable(this.name, data.nameTranslations);
         for (const rawKey in data.bonusesHQ) {
             if (rawKey === '0') {
                 continue;
@@ -738,7 +813,7 @@ export class DataApiFoodInfo implements FoodItem {
     }
 }
 
-export function processRawMateriaInfo(data: MateriaType): Materia[] {
+export function processRawMateriaInfo(data: ApiMateriaData): Materia[] {
     const out: Materia[] = [];
     for (let i = MATERIA_LEVEL_MIN_RELEVANT - 1; i < MATERIA_LEVEL_MAX_NORMAL; i++) {
         const itemData = data.item[i];
@@ -754,6 +829,7 @@ export function processRawMateriaInfo(data: MateriaType): Materia[] {
         const grade = (i + 1);
         out.push({
             name: itemName,
+            nameTranslation: toTranslatable(itemName, itemData.nameTranslations),
             id: itemId,
             iconUrl: new URL(itemData.icon.pngIconUrl),
             stats: stats,

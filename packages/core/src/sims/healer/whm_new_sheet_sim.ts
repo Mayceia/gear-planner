@@ -1,7 +1,7 @@
-import { Ability, BuffController, GcdAbility, OgcdAbility, PersonalBuff, SimSettings, SimSpec } from "@xivgear/core/sims/sim_types";
-import { CycleProcessor, CycleSimResult, ExternalCycleSettings, MultiCycleSettings, Rotation, PreDmgAbilityUseRecordUnf, AbilityUseResult } from "@xivgear/core/sims/cycle_sim";
-import { rangeInc } from "@xivgear/core/util/array_utils";
-import { BaseMultiCycleSim } from "@xivgear/core/sims/processors/sim_processors";
+import {Ability, BuffController, GcdAbility, OgcdAbility, PersonalBuff, SimSettings, SimSpec} from "@xivgear/core/sims/sim_types";
+import {CycleProcessor, CycleSimResult, ExternalCycleSettings, MultiCycleSettings, Rotation, PreDmgAbilityUseRecordUnf, AbilityUseResult} from "@xivgear/core/sims/cycle_sim";
+import {rangeInc} from "@xivgear/util/array_utils";
+import {BaseMultiCycleSim} from "@xivgear/core/sims/processors/sim_processors";
 //import {potionMaxMind} from "@xivgear/core/sims/common/potion";
 
 type WhmAbility = Ability & Readonly<{
@@ -27,7 +27,7 @@ const filler: WhmGcdAbility = {
     id: 25859,
     type: 'gcd',
     name: "Glare III",
-    potency: 330,
+    potency: 340,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
@@ -37,10 +37,10 @@ const dia: WhmGcdAbility = {
     id: 16532,
     type: 'gcd',
     name: "Dia",
-    potency: 75,
+    potency: 80,
     dot: {
         id: 1871,
-        tickPotency: 75,
+        tickPotency: 80,
         duration: 30,
     },
     attackType: "Spell",
@@ -117,7 +117,7 @@ const misery: WhmGcdAbility = {
     id: 16535,
     type: 'gcd',
     name: "Afflatus Misery",
-    potency: 1320,
+    potency: 1360,
     attackType: "Spell",
     gcd: 2.5,
     updateGauge: gauge => gauge.redLilies -= 3,

@@ -2,7 +2,7 @@
 import 'global-jsdom/register';
 import {describe, it} from "mocha";
 import * as assert from "assert";
-import {assertClose, makeFakeSet} from "@xivgear/core/test/test_utils";
+import {assertClose} from "@xivgear/util/test/test_utils";
 import {assertSimAbilityResults, setPartyBuffEnabled, UseResult} from "./sim_test_utils";
 import {JobMultipliers} from "@xivgear/xivmath/geartypes";
 import {getClassJobStats, getLevelStats, STANDARD_APPLICATION_DELAY} from "@xivgear/xivmath/xivconstants";
@@ -30,9 +30,10 @@ import {
     MultiCycleSettings,
     Rotation
 } from "@xivgear/core/sims/cycle_sim";
-import { BaseMultiCycleSim } from '@xivgear/core/sims/processors/sim_processors';
+import {BaseMultiCycleSim} from '@xivgear/core/sims/processors/sim_processors';
 import {gemdraught1mind} from "../../sims/common/potion";
 import {expect} from "chai";
+import {makeFakeSet} from "../test_utils";
 
 // Example of end-to-end simulation
 // This one is testing the simulation engine itself, so it copies the full simulation code rather than
@@ -238,12 +239,13 @@ const rawStats = {
     wdMag: 132,
     wdPhys: 132,
     weaponDelay: 3.44,
+    racialStrengthModifier: 3,
 };
 // Finalize the stats (add class modifiers, party bonus, etc)
 const stats = finalizeStats(rawStats, {}, 90, getLevelStats(90), 'WHM', {
     ...getClassJobStats('WHM'),
     jobStatMultipliers: jobStatMultipliers,
-}, 5);
+}, 5, "The Lost");
 
 // Turn the stats into a fake gear set. This object does not implement all of the methods that a CharacterGearSet
 // should, only the ones that would commonly be used in a simulation.

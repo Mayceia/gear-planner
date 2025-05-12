@@ -3,37 +3,64 @@ import {ItemDisplaySettings, MateriaAutoFillController} from "@xivgear/xivmath/g
 import {MateriaPriorityPicker} from "./materia";
 import {StatTierDisplay} from "./stat_tier_display";
 import {CharacterGearSet} from "@xivgear/core/gear";
-import {makeActionButton, redoIcon, undoIcon} from "@xivgear/common-ui/components/util";
-import {recordEvent, recordSheetEvent} from "@xivgear/core/analytics/analytics";
+import {
+    FieldBoundCheckBox,
+    labeledCheckbox,
+    makeActionButton,
+    quickElement,
+    redoIcon,
+    undoIcon
+} from "@xivgear/common-ui/components/util";
 import {GearPlanSheetGui} from "./sheet";
+import {recordSheetEvent} from "../analytics/analytics";
+import {recordEvent} from "@xivgear/common-ui/analytics/analytics";
 
-function makeIlvlArea(
+function makeGearFiltersArea(
     sheet: GearPlanSheetGui,
     itemDisplaySettings: ItemDisplaySettings,
-    displayUpdateCallback: () => void
-) {
-    const ilvlDiv = document.createElement('div');
-    ilvlDiv.classList.add('ilvl-picker-area');
+    displayUpdateCallback: () => void,
+    closeCallback: () => void) {
+    const filtersForm = document.createElement('form');
+    filtersForm.style.display = 'contents';
+    filtersForm.classList.add('ilvl-picker-area');
     const itemIlvlRange = new ILvlRangePicker(itemDisplaySettings, 'minILvl', 'maxILvl', 'Gear:');
-    itemIlvlRange.addListener(displayUpdateCallback);
+    // itemIlvlRange.addListener(displayUpdateCallback);
     itemIlvlRange.addListener((min, max) => {
         recordSheetEvent('itemIlvlRange', sheet, {
             min: min,
             max: max,
         });
     });
-    ilvlDiv.appendChild(itemIlvlRange);
+    filtersForm.appendChild(itemIlvlRange);
 
     const foodIlvlRange = new ILvlRangePicker(itemDisplaySettings, 'minILvlFood', 'maxILvlFood', 'Food:');
-    foodIlvlRange.addListener(displayUpdateCallback);
+    // foodIlvlRange.addListener(displayUpdateCallback);
     foodIlvlRange.addListener((min, max) => {
         recordSheetEvent('foodIlvlRange', sheet, {
             min: min,
             max: max,
         });
     });
-    ilvlDiv.appendChild(foodIlvlRange);
-    return ilvlDiv;
+    filtersForm.appendChild(foodIlvlRange);
+
+    const nqCb = new FieldBoundCheckBox(itemDisplaySettings, 'showNq', {
+        id: 'show-nq-cb',
+    });
+    const nqCbWithLabel = labeledCheckbox('Show NQ Items', nqCb);
+    filtersForm.appendChild(nqCbWithLabel);
+
+    const fakeSubmitButton = quickElement("button", [], ['Hidden']);
+    fakeSubmitButton.style.display = 'none';
+    fakeSubmitButton.type = 'submit';
+    filtersForm.appendChild(fakeSubmitButton);
+
+    filtersForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeCallback();
+    });
+
+    return quickElement('div', ['ilvl-picker-area'], [filtersForm]);
 }
 
 let currentToolbarPopout: HTMLElement | null = null;
@@ -54,16 +81,21 @@ export class ToolbarButtonsArea extends HTMLDivElement {
     constructor() {
         super();
         this.classList.add('toolbar-buttons-area');
+
+        // Undo button
         this.undoButton = makeActionButton([undoIcon()], () => {
             recordEvent("undo");
             this.currentSet?.undo();
         }, 'Undo');
         this.undoButton.classList.add('big-text-btn');
+
+        // Redo button
         this.redoButton = makeActionButton([redoIcon()], () => {
             recordEvent("redo");
             this.currentSet?.redo();
         }, 'Redo');
         this.redoButton.classList.add('big-text-btn');
+
         this.popoutArea = document.createElement('div');
         this.popoutArea.classList.add('popout-area');
         // Don't allow clicking on the actual popout to be treated as clicking on the button
@@ -77,6 +109,7 @@ export class ToolbarButtonsArea extends HTMLDivElement {
         this.popoutArea.addEventListener('click', evStop, {
             // capture: true
         });
+
         this.popoutArea.addEventListener('mousedown', evStop);
         this.popoutArea.addEventListener('mouseup', evStop);
         // this.popoutArea.addEventListener('pointerdown', evStop);
@@ -109,6 +142,23 @@ export class ToolbarButtonsArea extends HTMLDivElement {
         button.classList.add('popout-button');
         this.appendChild(button);
         this.panelButtons.push(button);
+    }
+
+    addPanelButtonModal(label: (string | Node)[], showModalFunc: () => void) {
+        const button = makeActionButton(label, (ev) => {
+            showModalFunc();
+        });
+        button.classList.add('popout-button');
+        this.appendChild(button);
+        this.panelButtons.push(button);
+    }
+
+    closePopout(): void {
+        const attr = 'popout-active';
+        this.panelButtons.forEach(btn => {
+            btn.removeAttribute(attr);
+        });
+        this.setActivePopoutElement(undefined);
     }
 
     private setActivePopout(button: HTMLButtonElement, popoutElement: HTMLElement) {
@@ -149,28 +199,28 @@ export class GearEditToolbar extends HTMLDivElement {
     private buttonsArea: ToolbarButtonsArea;
 
     constructor(sheet: GearPlanSheetGui,
-        itemDisplaySettings: ItemDisplaySettings,
-        displayUpdateCallback: () => void,
-        matFillCtrl: MateriaAutoFillController
+                itemDisplaySettings: ItemDisplaySettings,
+                updateGearDisplayNow: () => void,
+                matFillCtrl: MateriaAutoFillController
     ) {
         super();
         this.classList.add('gear-set-editor-toolbar');
 
-        // const leftDrag = quickElement('div', ['toolbar-float-left'], [document.createTextNode('≡')])
-        // const rightDrag = quickElement('div', ['toolbar-float-right'], [document.createTextNode('≡')])
-        // this.appendChild(leftDrag);
-        // this.appendChild(rightDrag);
-
         this.buttonsArea = new ToolbarButtonsArea();
 
-        const ilvlDiv = makeIlvlArea(sheet, itemDisplaySettings, displayUpdateCallback);
+        const ilvlDiv = makeGearFiltersArea(sheet, itemDisplaySettings, updateGearDisplayNow, () => {
+            updateGearDisplayNow();
+            this.buttonsArea.closePopout();
+        });
         this.buttonsArea.addPanelButton(["Gear", document.createElement('br'), "Filters"], ilvlDiv);
 
         this.appendChild(this.buttonsArea);
 
         const materiaPriority = new MateriaPriorityPicker(matFillCtrl, sheet);
 
-        this.buttonsArea.addPanelButton(["Materia", document.createElement('br'), "Fill/Solve"], materiaPriority);
+        this.buttonsArea.addPanelButton(["Materia", document.createElement('br'), "Fill/Lock"], materiaPriority);
+
+        this.buttonsArea.addPanelButtonModal(["Meld", document.createElement('br'), "Solver"], () => sheet.showMeldSolveDialog());
 
         this.statTierDisplay = new StatTierDisplay(sheet);
         this.appendChild(this.statTierDisplay);

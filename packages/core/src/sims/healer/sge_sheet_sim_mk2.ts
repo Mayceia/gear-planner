@@ -7,10 +7,10 @@ import {
     MultiCycleSettings,
     Rotation
 } from "@xivgear/core/sims/cycle_sim";
-import {gemdraught1mind} from "@xivgear/core/sims/common/potion";
-import {rangeInc} from "@xivgear/core/util/array_utils";
+import {potionMaxMind} from "@xivgear/core/sims/common/potion";
+import {rangeInc} from "@xivgear/util/array_utils";
 import {animationLock} from "@xivgear/core/sims/ability_helpers";
-import { BaseMultiCycleSim } from "@xivgear/core/sims/processors/sim_processors";
+import {BaseMultiCycleSim} from "@xivgear/core/sims/processors/sim_processors";
 
 /**
  * Used for all 360p filler abilities
@@ -18,7 +18,7 @@ import { BaseMultiCycleSim } from "@xivgear/core/sims/processors/sim_processors"
 const filler: GcdAbility = {
     type: 'gcd',
     name: "Dosis III",
-    potency: 360,
+    potency: 370,
     attackType: "Spell",
     gcd: 2.5,
     cast: 1.5,
@@ -32,7 +32,7 @@ const eDosis: GcdAbility = {
     dot: {
         id: 2864,
         duration: 30,
-        tickPotency: 75,
+        tickPotency: 80,
     },
     attackType: "Spell",
     fixedGcd: true,
@@ -186,7 +186,7 @@ export class SgeSheetSim extends BaseMultiCycleSim<SgeSheetSimResult, SgeNewShee
             cycleTime: 120,
             apply(cp: SageCycleProcessor) {
                 if (outer.settings.usePotion) {
-                    cp.useOgcd(gemdraught1mind);
+                    cp.useOgcd(potionMaxMind);
                 }
                 cp.useGcd(filler);
                 cp.remainingCycles(cycle => {
@@ -209,7 +209,7 @@ export class SgeSheetSim extends BaseMultiCycleSim<SgeSheetSimResult, SgeNewShee
             cycleTime: 120,
             apply(cp: SageCycleProcessor) {
                 if (outer.settings.usePotion) {
-                    cp.useOgcd(gemdraught1mind);
+                    cp.useOgcd(potionMaxMind);
                 }
                 const DOT_CLIP_AMOUNT = i;
                 cp.useGcd(filler);

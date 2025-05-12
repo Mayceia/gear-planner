@@ -8,11 +8,11 @@ import {closeModal} from "@xivgear/common-ui/modalcontrol";
 import {putShortLink} from "@xivgear/core/external/shortlink_server";
 import {CharacterGearSet} from "@xivgear/core/gear";
 import {BaseModal} from "@xivgear/common-ui/components/modal";
-import {makeUrl, VIEW_SET_HASH} from "@xivgear/core/nav/common_nav";
+import {makeUrlSimple, ONLY_SET_QUERY_PARAM, VIEW_SET_HASH} from "@xivgear/core/nav/common_nav";
 import {GearPlanSheet} from "@xivgear/core/sheet";
-import {writeProxy} from "@xivgear/core/util/proxies";
+import {writeProxy} from "@xivgear/util/proxies";
 import {EquipSlots, Materia, XivItem} from "@xivgear/xivmath/geartypes";
-import {recordSheetEvent} from "@xivgear/core/analytics/analytics";
+import {recordSheetEvent} from "../analytics/analytics";
 
 type ExportMethod<X> = {
     /**
@@ -72,13 +72,19 @@ const linkPerSet = {
     exportInstantly: false,
     async doExport(sheet: GearPlanSheet): Promise<string> {
         const sets = sheet.sets;
-        if (sets.length === 0) {
+        if (sets.filter(set => !set.isSeparator).length === 0) {
             return "This sheet does not have any sets!";
         }
         let out = '';
-        for (const set of sets) {
-            const exportedSet = JSON.stringify(sheet.exportGearSet(set, true));
-            const linkToSet = await putShortLink(exportedSet).then(link => link.toString());
+        const exportedSheet = JSON.stringify(sheet.exportSheet(true));
+        const linkToSheet = await putShortLink(exportedSheet);
+        for (const i in sets) {
+            const set = sets[i];
+            if (set.isSeparator) {
+                continue;
+            }
+            const linkToSet = new URL(linkToSheet);
+            linkToSet.searchParams.set(ONLY_SET_QUERY_PARAM, i);
             out += linkToSet;
             out += '\n';
         }
@@ -94,13 +100,19 @@ const embedLinkPerSet = {
     exportInstantly: false,
     async doExport(sheet: GearPlanSheet): Promise<string> {
         const sets = sheet.sets;
-        if (sets.length === 0) {
+        if (sets.filter(set => !set.isSeparator).length === 0) {
             return "This sheet does not have any sets!";
         }
         let out = '';
-        for (const set of sets) {
-            const exportedSet = JSON.stringify(sheet.exportGearSet(set, true));
-            const linkToSet = await putShortLink(exportedSet, true).then(link => link.toString());
+        const exportedSheet = JSON.stringify(sheet.exportSheet(true));
+        const linkToSheet = await putShortLink(exportedSheet, true);
+        for (const i in sets) {
+            const set = sets[i];
+            if (set.isSeparator) {
+                continue;
+            }
+            const linkToSet = new URL(linkToSheet);
+            linkToSet.searchParams.set(ONLY_SET_QUERY_PARAM, i);
             out += linkToSet;
             out += '\n';
         }
@@ -209,7 +221,13 @@ export function startExport(sheet: GearPlanSheet | CharacterGearSet) {
     modal.attachAndShow();
 }
 
-window["startExport"] = startExport;
+declare global {
+    interface Window {
+        startExport: typeof startExport;
+    }
+}
+
+window.startExport = startExport;
 
 const DEFAULT_EXPORT_TEXT = 'Choose an export type from above, then click "Generate" below.\n\nYou can also click "Preview" to get an idea of what your sheet/set will look like after exporting.';
 
@@ -356,7 +374,8 @@ class SheetExportModal extends ExportModal<GearPlanSheet> {
 
     get previewUrl(): string {
         const exported = this.sheet.exportSheet(true);
-        const url = makeUrl(VIEW_SET_HASH, JSON.stringify(exported));
+        const url = makeUrlSimple(VIEW_SET_HASH, JSON.stringify(exported));
+        console.log("Preview url", url);
         return url.toString();
     }
 }
@@ -369,7 +388,8 @@ class SetExportModal extends ExportModal<CharacterGearSet> {
 
     get previewUrl(): string {
         const exported = this.sheet.exportGearSet(this.item, true);
-        const url = makeUrl(VIEW_SET_HASH, JSON.stringify(exported));
+        const url = makeUrlSimple(VIEW_SET_HASH, JSON.stringify(exported));
+        console.log("Preview url", url);
         return url.toString();
     }
 }

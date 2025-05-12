@@ -115,6 +115,16 @@ export interface Simulation<ResultType extends SimResult, SettingsType extends S
     simulate(set: CharacterGearSet): Promise<ResultType>;
 
     /**
+     * Like {@link simulate}, but only needs to return a single number. This is used for meld solving and such, as the
+     * brute force sim does not need to display any additional data to the user. If the extra processing time and
+     * memory use from the normal simulation path is trivial for a particular sim implementation, then this can be
+     * implemented as simply "return (await this.simulate(set)).mainDpsResult".
+     *
+     * @param set
+     */
+    simulateSimple(set: CharacterGearSet): Promise<number>;
+
+    /**
      * The internalized settings of the object.
      */
     settings: SettingsType;
@@ -135,6 +145,11 @@ export interface Simulation<ResultType extends SimResult, SettingsType extends S
      * may also be implemented for changes to gear sets.
      */
     readonly manualRun?: boolean;
+
+    /**
+     * Notify the sim that settings have changed
+     */
+    settingsChanged(): void;
 }
 
 /**
@@ -142,7 +157,7 @@ export interface Simulation<ResultType extends SimResult, SettingsType extends S
  * others, such as those which use an external service, run asynchronously, and so intermediate
  * states such as 'Running' need to be represented.
  */
-export interface SimCurrentResult<X extends SimResult> {
+export interface SimCurrentResult<X extends SimResult = SimResult> {
     /**
      * The result. undefined unless {@link status} === 'Done'.
      */
@@ -242,6 +257,7 @@ export type DamagingAbility = Readonly<{
     autoCrit?: boolean,
     autoDh?: boolean,
     dot?: DotInfo,
+    alternativeScalings?: AlternativeScaling[],
 }>;
 
 /**
@@ -250,9 +266,9 @@ export type DamagingAbility = Readonly<{
  * the potency of skills, or granting new buffs.
  */
 export type LevelModifier = ({
-    minLevel: number,
-})
-& Omit<Partial<BaseAbility>, 'levelModifiers'>;
+        minLevel: number,
+    })
+    & Omit<Partial<BaseAbility>, 'levelModifiers'>;
 
 /**
  * Combo mode:
@@ -262,6 +278,12 @@ export type LevelModifier = ({
  * nobreak: no impact on any current combo. Default for non-GCDs.
  */
 export type ComboBehavior = ComboData['comboBehavior'];
+
+/**
+ * Alternate scalings that can exist for abilities, e.g. Living
+ * Shadow, Bunshin, SMN pet actions.
+ */
+export type AlternativeScaling = "Living Shadow Strength Scaling" | "Pet Action Weapon Damage";
 
 export type BaseAbility = Readonly<{
     /**
@@ -325,7 +347,13 @@ export type BaseAbility = Readonly<{
      * the highest `minLevel` specified.
      */
     levelModifiers?: LevelModifier[],
+    /**
+     * If the ability uses alternate scalings, such as Living Shadow Strength
+     * scaling or using the pet action Weapon Damage multiplier.
+     */
+    alternativeScalings?: AlternativeScaling[],
 } & (NonDamagingAbility | DamagingAbility)>;
+
 
 /**
  * Represents the cooldown of an ability
@@ -464,7 +492,8 @@ export type PreDmgUsedAbility = {
      */
     lockTime: number
     /**
-     * Extra data relating to the ability used. Useful for
+     * Extra data relating to the ability used. Useful for sims which wish to attach their own gauge information
+     * for display in the results.
      */
     extraData?: object
 };
@@ -697,3 +726,4 @@ export type CombinedBuffEffect = {
      */
     modifyStats: (stats: ComputedSetStats) => ComputedSetStats,
 }
+

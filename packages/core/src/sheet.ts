@@ -1,11 +1,14 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                // TODO: get back to fixing this at some point
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// TODO: get back to fixing this at some point
 import {
+    ALL_COMBAT_JOBS,
     CURRENT_MAX_LEVEL,
     defaultItemDisplaySettings,
     DefaultMateriaFillPrio,
     getClassJobStats,
     getDefaultDisplaySettings,
     getRaceStats,
+    JOB_DATA,
     JobName,
     LEVEL_ITEMS,
     MAIN_STATS,
@@ -21,6 +24,7 @@ import {
     ItemDisplaySettings,
     ItemSlotExport,
     JobData,
+    JobDataConst,
     Materia,
     MateriaAutoFillController,
     MateriaAutoFillPrio,
@@ -30,16 +34,17 @@ import {
     PartyBonusAmount,
     RawStatKey,
     SetExport,
+    SetExportExternalSingle,
     SetStatsExport,
     SheetExport,
     SheetStatsExport,
     SimExport,
     Substat
 } from "@xivgear/xivmath/geartypes";
-import {CharacterGearSet, isSameOrBetterItem} from "./gear";
-import {DataManager, makeDataManager} from "./datamanager";
-import {Inactivitytimer} from "./util/inactivitytimer";
-import {writeProxy} from "./util/proxies";
+import {CharacterGearSet, isSameOrBetterItem, SyncInfo} from "./gear";
+import {DataManager, DmJobs, makeDataManager} from "./datamanager";
+import {Inactivitytimer} from "@xivgear/util/inactivitytimer";
+import {writeProxy} from "@xivgear/util/proxies";
 import {SHARED_SET_NAME} from "@xivgear/core/imports/imports";
 import {SimCurrentResult, SimResult, Simulation} from "./sims/sim_types";
 import {getDefaultSims, getRegisteredSimSpecs, getSimSpecByStub} from "./sims/sim_registry";
@@ -47,12 +52,15 @@ import {getNextSheetInternalName} from "./persistence/saved_sheets";
 import {CustomItem} from "./customgear/custom_item";
 import {CustomFood} from "./customgear/custom_food";
 import {IlvlSyncInfo} from "./datamanager_xivapi";
-import {toSerializableForm} from "@xivgear/xivmath/xivstats";
+import {statsSerializationProxy} from "@xivgear/xivmath/xivstats";
 import {isMateriaAllowed} from "./materia/materia_utils";
 
 export type SheetCtorArgs = ConstructorParameters<typeof GearPlanSheet>
 export type SheetContstructor<SheetType extends GearPlanSheet> = (...values: SheetCtorArgs) => SheetType;
 
+/**
+ * SheetProvider is the base class for turning sheet exports or fresh sheets into rehydrated sheet objects.
+ */
 export class SheetProvider<SheetType extends GearPlanSheet> {
 
     constructor(private readonly sheetConstructor: SheetContstructor<SheetType>) {
@@ -62,16 +70,35 @@ export class SheetProvider<SheetType extends GearPlanSheet> {
         return this.sheetConstructor(...args);
     }
 
+    /**
+     * Produce a sheet from a SheetExport
+     *
+     * @param importedData
+     */
     fromExport(importedData: SheetExport): SheetType {
-        return this.construct(undefined, importedData);
+        const sheet = this.construct(undefined, importedData);
+        // If sims are not specified at all in the import, add the defaults.
+        // Note that this will not add sims if they are specified as [], only
+        // if unspecified.
+        // We check the import data here as the sheet will have sims = [] at this
+        // point.
+        if (importedData.sims === undefined) {
+            sheet.addDefaultSims();
+        }
+        return sheet;
     }
 
-    fromSetExport(...importedData: SetExport[]): SheetType {
+    /**
+     * Produce a sheet from a single-set export.
+     *
+     * @param importedData
+     */
+    fromSetExport(...importedData: SetExportExternalSingle[]): SheetType {
         if (importedData.length === 0) {
             throw Error("Imported sets cannot be be empty");
         }
         const gearPlanSheet = this.fromExport({
-            race: undefined,
+            race: importedData[0].race ?? undefined,
             sets: [...importedData],
             sims: importedData[0].sims ?? [],
             name: importedData[0].name ?? SHARED_SET_NAME,
@@ -79,11 +106,13 @@ export class SheetProvider<SheetType extends GearPlanSheet> {
             job: importedData[0].job,
             level: importedData[0].level,
             ilvlSync: importedData[0].ilvlSync,
-            partyBonus: 0,
+            partyBonus: importedData[0].partyBonus ?? 0,
             itemDisplaySettings: defaultItemDisplaySettings,
             // TODO: make these smarter - make them deduplicate identical items
             customItems: importedData.flatMap(imp => imp.customItems ?? []),
             customFoods: importedData.flatMap(imp => imp.customFoods ?? []),
+            timestamp: importedData[0].timestamp,
+            isMultiJob: false,
         });
         if (importedData[0].sims === undefined) {
             gearPlanSheet.addDefaultSims();
@@ -93,12 +122,22 @@ export class SheetProvider<SheetType extends GearPlanSheet> {
         return gearPlanSheet;
     }
 
-    fromScratch(sheetKey: string, sheetName: string, classJob: JobName, level: SupportedLevel, ilvlSync: number | undefined): SheetType {
+    /**
+     * Create a new sheet from scratch
+     *
+     * @param sheetKey The save key for the sheet
+     * @param sheetName The name of the sheet
+     * @param classJob The class/job of the sheet
+     * @param level The level of the sheet
+     * @param ilvlSync The ilvl sync of the sheet, or undefined if the sheet should not have an ilvl sync.
+     * @param multiJob Whether to create a multi-job sheet.
+     */
+    fromScratch(sheetKey: string, sheetName: string, classJob: JobName, level: SupportedLevel, ilvlSync: number | undefined, multiJob: boolean): SheetType {
         const fakeExport: SheetExport = {
             job: classJob,
             level: level,
             name: sheetName,
-            partyBonus: 0,
+            partyBonus: classJob === 'BLU' ? 1 : 5,
             race: undefined,
             saveKey: sheetKey,
             sets: [{
@@ -107,6 +146,7 @@ export class SheetProvider<SheetType extends GearPlanSheet> {
             }],
             sims: [],
             ilvlSync: ilvlSync,
+            isMultiJob: multiJob,
             // ctor will auto-fill the rest
         };
         const gearPlanSheet = this.construct(sheetKey, fakeExport);
@@ -141,11 +181,16 @@ function loadSaved(sheetKey: string): SheetExport | null {
     }
 }
 
+/**
+ * Base class for a sheet. For graphical usage, see GearPlanSheetGui.
+ */
 export class GearPlanSheet {
     // General sheet properties
     _sheetName: string;
     _description: string;
     readonly classJobName: JobName;
+    readonly altJobs: JobName[];
+    readonly isMultiJob: boolean;
     readonly level: SupportedLevel;
     readonly ilvlSync: number | undefined;
     private _race: RaceName | undefined;
@@ -185,6 +230,7 @@ export class GearPlanSheet {
     // Temporal state
     private readonly saveTimer: Inactivitytimer;
 
+    private _timestamp: Date;
 
     // Can't make ctor private for custom element, but DO NOT call this directly - use fromSaved or fromScratch
     constructor(sheetKey: string, importedData: SheetExport) {
@@ -195,7 +241,14 @@ export class GearPlanSheet {
         this.level = importedData.level ?? CURRENT_MAX_LEVEL;
         this._race = importedData.race;
         this._partyBonus = importedData.partyBonus ?? 0;
+        // TODO: why does this default to WHM? Shouldn't it just throw?
         this.classJobName = importedData.job ?? 'WHM';
+        this.isMultiJob = importedData.isMultiJob;
+        this.altJobs = this.isMultiJob ? [
+            ...ALL_COMBAT_JOBS.filter(job => JOB_DATA[job].role === JOB_DATA[this.classJobName].role
+                // Don't include the primary job in the list of alt jobs
+                && job !== this.classJobName),
+        ] : [];
         this.ilvlSync = importedData.ilvlSync;
         this._description = importedData.description;
         if (importedData.itemDisplaySettings) {
@@ -230,15 +283,27 @@ export class GearPlanSheet {
                 this._customFoods.push(CustomFood.fromExport(ci));
             });
         }
+        if (importedData.timestamp) {
+            this._timestamp = new Date(importedData.timestamp);
+        }
+        else {
+            this._timestamp = new Date();
+        }
 
         // Early gui setup
         this.saveTimer = new Inactivitytimer(1_000, () => this.saveData());
     }
 
+    /**
+     * The key under which this sheet should be saved in LocalStorage.
+     */
     get saveKey() {
         return this._saveKey;
     }
 
+    /**
+     * Whether to show advanced stats.
+     */
     get showAdvancedStats() {
         return this._showAdvancedStats;
     }
@@ -247,15 +312,25 @@ export class GearPlanSheet {
         this._showAdvancedStats = show;
     }
 
+    /**
+     * Whether setup/loading is done.
+     */
     get setupDone() {
         return this._setupDone;
     }
 
+    /**
+     * Whether this sheet is in view-only mode.
+     */
     get isViewOnly() {
         return this._isViewOnly;
     }
 
-    // Does not actually support any filling since the top-level sheet does not support selection
+    /**
+     * The materia autofill controller for this sheet.
+     *
+     * This only has a real implementation in GearPlanSheetGui, since materia autofilling is a gui-only feature.
+     */
     get materiaAutoFillController(): MateriaAutoFillController {
         const outer = this;
         return {
@@ -278,23 +353,48 @@ export class GearPlanSheet {
             fillEmpty(): void {
                 console.log('fillEmpty not implemented');
             },
-            refreshOnly(): void {
-                console.log('nothing to refresh');
+            lockEmpty(): void {
+                console.log('lockEmpty not implemented');
+            },
+            lockFilled(): void {
+                console.log('lockFilled not implemented');
+            },
+            unequipUnlocked(): void {
+                console.log('unequipUnlocked not implemented');
+            },
+            unlockAll(): void {
+                console.log('unlockAll not implemented');
             },
 
         };
     }
 
+    /**
+     * Enable view-only mode. Cannot be disabled once enabled.
+     */
     setViewOnly() {
         this._isViewOnly = true;
     }
 
+    get allJobs(): DmJobs {
+        return [this.classJobName, ...this.altJobs];
+    }
+
+    /**
+     * Load the sheet data fully. Create a DataManager internally.
+     */
     async load() {
-        const dataManager = makeDataManager(this.classJobName, this.level, this.ilvlSync);
+        const dataManager = makeDataManager(this.allJobs, this.level, this.ilvlSync);
         await dataManager.loadData();
         await this.loadFromDataManager(dataManager);
     }
 
+    /**
+     * Load the sheet data from a DataManager. The DataManager must already be loaded before calling this method.
+     * This can be used for things like meld solving, where a worker can load a DM once and then re-use it.
+     *
+     * @param dataManager The DataManager to use.
+     */
     async loadFromDataManager(dataManager: DataManager) {
         console.log("Loading sheet...");
         console.log("Reading data");
@@ -336,6 +436,9 @@ export class GearPlanSheet {
         this.recheckCustomItems();
     }
 
+    /**
+     * Save data for this sheet now.
+     */
     saveData() {
         if (!this.setupDone) {
             // Don't clobber a save with empty data because the sheet hasn't loaded!
@@ -343,18 +446,27 @@ export class GearPlanSheet {
         }
         if (this.saveKey) {
             console.log("Saving sheet " + this.sheetName);
+            this._timestamp = new Date();
             const fullExport = this.exportSheet(false);
             localStorage.setItem(this.saveKey, JSON.stringify(fullExport));
         }
         else {
-            console.info("Ignoring request to save sheet because it has no save key");
+            console.debug("Ignoring request to save sheet because it has no save key");
         }
     }
 
+    /**
+     * Request a save to be completed asynchronously. The actual save is only performed once no more requestSave() calls
+     * have happened for a certain timeout, thus allowing multiple modifications to be coalesced into a single save
+     * operation.
+     */
     requestSave() {
         this.saveTimer.ping();
     }
 
+    /**
+     * The name of the sheet.
+     */
     get sheetName() {
         return this._sheetName;
     }
@@ -364,6 +476,9 @@ export class GearPlanSheet {
         this.requestSave();
     }
 
+    /**
+     * The description of the sheet.
+     */
     get description() {
         return this._description;
     }
@@ -382,7 +497,7 @@ export class GearPlanSheet {
      * @param ilvlSync New ilvl sync. Leave unspecified or use special value 'keep' to keep existing ilvl sync.
      * @returns The saveKey of the new sheet.
      */
-    saveAs(name?: string, job?: JobName, level?: SupportedLevel, ilvlSync: number | 'keep' = 'keep'): string {
+    saveAs(name: string, job: JobName, level: SupportedLevel, ilvlSync: number | 'keep' | undefined, multiJob: boolean): string {
         const exported = this.exportSheet(true);
         if (name !== undefined) {
             exported.name = name;
@@ -395,6 +510,12 @@ export class GearPlanSheet {
         }
         if (ilvlSync !== 'keep') {
             exported.ilvlSync = ilvlSync;
+        }
+        exported.isMultiJob = multiJob;
+        if (!multiJob) {
+            exported.sets.forEach(setExport => {
+                setExport.jobOverride = null;
+            });
         }
         const newKey = getNextSheetInternalName();
         localStorage.setItem(newKey, JSON.stringify(exported));
@@ -415,13 +536,21 @@ export class GearPlanSheet {
     exportSheet(external: boolean, fullStats: false): SheetExport;
     exportSheet(external: boolean, fullStats: true): SheetStatsExport;
 
+    /**
+     * Export the sheet to serialized form.
+     *
+     * @param external  Whether this is an external (shared publicly) or internal (saved locally). Certain properties,
+     * such as the save key, are not useful for external exports, so they are omitted.
+     * @param fullStats Whether to include the computedStats in the result. If true, returns SheetStatsExport instead
+     * of the plain SheetExport.
+     */
     exportSheet(external: boolean = false, fullStats: boolean = false): SheetExport | SheetStatsExport {
         const sets = this._sets.map(set => {
             const rawExport = this.exportGearSet(set, false);
             if (fullStats) {
                 const augGs: SetStatsExport = {
                     ...rawExport,
-                    computedStats: toSerializableForm(set.computedStats),
+                    computedStats: statsSerializationProxy(set.computedStats),
                 };
                 return augGs;
             }
@@ -444,6 +573,8 @@ export class GearPlanSheet {
             description: this.description,
             customItems: this._customItems.map(ci => ci.export()),
             customFoods: this._customFoods.map(cf => cf.export()),
+            timestamp: this.timestamp.getTime(),
+            isMultiJob: this.isMultiJob,
         };
         if (!external) {
             out.saveKey = this._saveKey;
@@ -452,6 +583,12 @@ export class GearPlanSheet {
 
     }
 
+    /**
+     * Add a new gear set.
+     *
+     * @param gearSet The set to add.
+     * @param index The index at which to insert the set. If omitted, it is added to the end.
+     */
     addGearSet(gearSet: CharacterGearSet, index?: number) {
         if (index === undefined) {
             this._sets.push(gearSet);
@@ -465,11 +602,22 @@ export class GearPlanSheet {
         this.saveData();
     }
 
+    /**
+     * Delete a gear set.
+     *
+     * @param gearSet
+     */
     delGearSet(gearSet: CharacterGearSet) {
         this._sets = this._sets.filter(gs => gs !== gearSet);
         this.saveData();
     }
 
+    /**
+     * Move a gear set to a new index.
+     *
+     * @param gearSet The set to move.
+     * @param to      The index to which the gearset should be re-ordered.
+     */
     reorderSet(gearSet: CharacterGearSet, to: number) {
         const sets = [...this._sets];
         const from = sets.indexOf(gearSet);
@@ -499,6 +647,12 @@ export class GearPlanSheet {
         this.addGearSet(cloned, toIndex);
     }
 
+    /**
+     * Determine the placement index for a cloned set. Helper method of {@link #cloneAndAddGearSet}.
+     *
+     * @param originalSet The set being cloned.
+     * @protected
+     */
     protected clonedSetPlacement(originalSet: CharacterGearSet): number | undefined {
         const originalIndex = this.sets.indexOf(originalSet);
         if (originalIndex >= 0) {
@@ -513,6 +667,9 @@ export class GearPlanSheet {
 
     }
 
+    exportGearSet(set: CharacterGearSet): SetExport;
+    exportGearSet(set: CharacterGearSet, external: false): SetExport;
+    exportGearSet(set: CharacterGearSet, external: true): SetExportExternalSingle;
     /**
      * Export a CharacterGearSet to a SetExport so that it can safely be serialized for saving or sharing.
      *
@@ -520,9 +677,10 @@ export class GearPlanSheet {
      * @param external true to include fields which are useful for exporting but not saving (e.g. including job name
      * for single set exports).
      */
-    exportGearSet(set: CharacterGearSet, external: boolean = false): SetExport {
+    exportGearSet(set: CharacterGearSet, external: boolean = false): SetExport | SetExportExternalSingle {
         const items: { [K in EquipSlotKey]?: ItemSlotExport } = {};
-        for (const equipmentKey in set.equipment) {
+        for (const k in set.equipment) {
+            const equipmentKey = k as EquipSlotKey;
             const inSlot: EquippedItem = set.equipment[equipmentKey];
             if (inSlot) {
                 const exportedItem: ItemSlotExport = {
@@ -531,11 +689,17 @@ export class GearPlanSheet {
                     // On the other hand, *most* real exports would have slots filled (BiS etc)
                     id: inSlot.gearItem.id,
                     materia: inSlot.melds.map(meld => {
-                        return {id: meld.equippedMateria?.id ?? -1};
+                        return {
+                            id: meld.equippedMateria?.id ?? -1,
+                            locked: meld.locked,
+                        };
                     }),
                 };
                 if (inSlot.relicStats && Object.entries(inSlot.relicStats)) {
                     exportedItem.relicStats = {...inSlot.relicStats};
+                }
+                if (inSlot.gearItem.isNqVersion) {
+                    exportedItem.forceNq = true;
                 }
                 items[equipmentKey] = exportedItem;
             }
@@ -548,12 +712,16 @@ export class GearPlanSheet {
             isSeparator: set.isSeparator,
         };
         if (external) {
-            out.job = this.classJobName;
-            out.level = this.level;
-            out.ilvlSync = this.ilvlSync;
-            out.sims = this.exportSims(true);
-            out.customItems = this._customItems.map(ci => ci.export());
-            out.customFoods = this._customFoods.map(cf => cf.export());
+            const ext = out as SetExportExternalSingle;
+            ext.job = this.classJobName;
+            ext.level = this.level;
+            ext.ilvlSync = this.ilvlSync;
+            ext.sims = this.exportSims(true);
+            ext.customItems = this._customItems.map(ci => ci.export());
+            ext.customFoods = this._customFoods.map(cf => cf.export());
+            ext.partyBonus = this._partyBonus;
+            ext.race = this._race;
+            ext.job = set.job;
         }
         else {
             if (set.relicStatMemory) {
@@ -562,20 +730,34 @@ export class GearPlanSheet {
             if (set.materiaMemory) {
                 out.materiaMemory = set.materiaMemory.export();
             }
+            if (set.jobOverride) {
+                out.jobOverride = set.jobOverride;
+            }
         }
         return out;
     }
 
-    itemById(id: number): GearItem {
+    /**
+     * Return an item from the DataManager by its ID. Returns undefined if the item could not be found.
+     *
+     * @param id The item ID. For custom items, use the custom item's fake ID.
+     * @param forceNq If true, searches for an NQ version of an otherwise-HQ item.
+     */
+    itemById(id: number, forceNq: boolean = false): GearItem {
         const custom = this._customItems.find(ci => ci.id === id);
         if (custom) {
             return custom;
         }
         else {
-            return this.dataManager.itemById(id);
+            return this.dataManager.itemById(id, forceNq);
         }
     }
 
+    /**
+     * Return a food item from the DataManager by its ID. Returns undefined if the item could not be found.
+     *
+     * @param id The item IJD. FOr custom items, use the custom item's fake ID.
+     */
     foodById(id: number): FoodItem {
         const custom = this._customFoods.find(cf => cf.id === id);
         if (custom) {
@@ -586,10 +768,38 @@ export class GearPlanSheet {
         }
     }
 
+    /**
+     * Return the ilvl sync info for a particular level.
+     *
+     * @param ilvl
+     */
     ilvlSyncInfo(ilvl: number): IlvlSyncInfo | undefined {
         return this.dataManager?.getIlvlSyncInfo(ilvl);
     }
 
+    /**
+     * Return the highest ilvl of non-custom items in a particular slot
+     *
+     * @param slot
+     */
+    highestIlvlForSlot(slot: OccGearSlotKey): number {
+        return Math.max(...this.dataManager.allItems.filter(item => item.occGearSlotName === slot)
+            .map(item => item.ilvl));
+    }
+
+    /**
+     * Returns the highest
+     * @param slot
+     */
+    highestIlvlItemForSlot(slot: OccGearSlotKey): GearItem | undefined {
+        return this.dataManager.allItems.filter(item => item.occGearSlotName === slot)
+            .sort((a, b) => b.ilvl - a.ilvl)[0];
+    }
+
+    /**
+     * Get the next free custom item ID.
+     * @private
+     */
     private get nextCustomItemId() {
         if (this._customItems.length === 0) {
             return 10_000_000_000_000 + Math.floor(Math.random() * 1_000_000);
@@ -599,6 +809,10 @@ export class GearPlanSheet {
         }
     }
 
+    /**
+     * Returns the starting set of data for a new custom item.
+     * @param slot The slot for which to make the custom item.
+     */
     newCustomItem(slot: OccGearSlotKey): CustomItem {
         const item = CustomItem.fromScratch(this.nextCustomItemId, slot, this);
         this._customItems.push(item);
@@ -607,6 +821,9 @@ export class GearPlanSheet {
         return item;
     }
 
+    /**
+     * Returns the starting set of data for a new custom food.
+     */
     newCustomFood(): CustomFood {
         const food = CustomFood.fromScratch(this.nextCustomItemId);
         this._customFoods.push(food);
@@ -614,14 +831,28 @@ export class GearPlanSheet {
         return food;
     }
 
+    /**
+     * All custom items in this sheet.
+     */
     get customItems() {
         return [...this._customItems];
     }
 
+    /**
+     * All custom food items in this sheet.
+     */
     get customFood() {
         return [...this._customFoods];
     }
 
+    /**
+     * Delete the given custom item.
+     *
+     * Warning: currently DOES NOT check that the item is not equipped. Deleting an item while it is still equipped
+     * in one or more sets can cause undefined behavior!
+     *
+     * @param item The item to delete.
+     */
     deleteCustomItem(item: CustomItem) {
         // TODO: this should check if you have this item equipped on any sets, or ask
         const idx = this._customItems.indexOf(item);
@@ -632,6 +863,14 @@ export class GearPlanSheet {
         this.recalcAll();
     }
 
+    /**
+     * Delete the given custom food item.
+     *
+     * Warning: currently DOES NOT check that the item is not equipped. Deleting an item while it is still equipped
+     * in one or more sets can cause undefined behavior!
+     *
+     * @param item The food item to delete
+     */
     deleteCustomFood(item: CustomFood) {
         // TODO: this should check if you have this item equipped on any sets, or ask
         const idx = this._customFoods.indexOf(item);
@@ -641,6 +880,12 @@ export class GearPlanSheet {
         this.recalcAll();
     }
 
+    /**
+     * Import a sim from a sim export. Does not add it to the simulations - you still need to do that if you would like
+     * the sim to appear on the sheet (see {@link #addSim}).
+     *
+     * @param simExport The data to import.
+     */
     importSim(simExport: SimExport): Simulation<any, any, any> {
         const simSpec = getSimSpecByStub(simExport.stub);
         if (simSpec === undefined) {
@@ -669,27 +914,33 @@ export class GearPlanSheet {
         else {
 
             for (const equipmentSlot in importedSet.items) {
-                const importedItem: ItemSlotExport = importedSet.items[equipmentSlot];
+                const importedItem: ItemSlotExport = importedSet.items[equipmentSlot as EquipSlotKey];
                 if (!importedItem) {
                     continue;
                 }
-                const baseItem = this.itemById(importedItem.id);
+                const baseItem = this.itemById(importedItem.id, importedItem.forceNq);
                 if (!baseItem) {
                     continue;
                 }
                 const equipped = new EquippedItem(baseItem);
                 for (let i = 0; i < Math.min(equipped.melds.length, importedItem.materia.length); i++) {
-                    const id = importedItem.materia[i].id;
+                    const importedMateria = importedItem.materia[i];
+                    const id = importedMateria.id;
                     const mat = this.dataManager.materiaById(id);
+                    const slot = equipped.melds[i];
+                    if (slot === undefined) {
+                        console.error(`mismatched materia slot! i == ${i}, slots length == ${equipped.melds.length}`);
+                    }
+                    slot.locked = importedMateria.locked ?? false;
                     if (!mat) {
                         continue;
                     }
-                    equipped.melds[i].equippedMateria = mat;
+                    slot.equippedMateria = mat;
                 }
                 if (importedItem.relicStats && equipped.gearItem.isCustomRelic) {
                     Object.assign(equipped.relicStats, importedItem.relicStats);
                 }
-                set.equipment[equipmentSlot] = equipped;
+                set.equipment[equipmentSlot as EquipSlotKey] = equipped;
             }
             if (importedSet.food) {
                 set.food = this.foodById(importedSet.food);
@@ -699,6 +950,13 @@ export class GearPlanSheet {
             }
             if (importedSet.materiaMemory) {
                 set.materiaMemory.import(importedSet.materiaMemory);
+            }
+            if (importedSet.jobOverride) {
+                set.earlySetJobOverride(importedSet.jobOverride);
+            }
+            // When importing a single set into a multi-job sheet, set the job override
+            else if ('job' in importedSet && importedSet.job && this.isMultiJob) {
+                set.earlySetJobOverride((importedSet as SetExportExternalSingle).job);
             }
         }
         return set;
@@ -733,20 +991,32 @@ export class GearPlanSheet {
         return out;
     }
 
+    /**
+     * Force a full recalc of every set. For example, this should be called after a custom item is edited, or
+     * after a race/party size change.
+     */
     recalcAll() {
         for (const set of this._sets) {
             set.forceRecalc();
         }
     }
 
-    get classJobStats() {
+    /**
+     * Get the class/job stats for the sheet's class/job.
+     */
+    get classJobStats(): JobData {
         return this.statsForJob(this.classJobName);
     }
 
-    private get classJobEarlyStats() {
+    private get classJobEarlyStats(): JobDataConst {
         return getClassJobStats(this.classJobName);
     }
 
+    /**
+     * Get the class/job stats for a different class/job.
+     *
+     * @param job
+     */
     statsForJob(job: JobName): JobData {
         return {
             ...getClassJobStats(job),
@@ -754,7 +1024,11 @@ export class GearPlanSheet {
         };
     }
 
-    isStatRelevant(stat: RawStatKey) {
+    /**
+     * Determine whether a stat is relevant to this sheet based on its job.
+     * @param stat
+     */
+    isStatRelevant(stat: RawStatKey): boolean {
         if (!this.classJobEarlyStats) {
             // Not sure what the best way to handle this is
             return true;
@@ -770,14 +1044,23 @@ export class GearPlanSheet {
         }
     }
 
+    /**
+     * Get sims which might be relevant to this sheet.
+     */
     get relevantSims() {
-        return getRegisteredSimSpecs().filter(simSpec => simSpec.supportedJobs === undefined ? true : simSpec.supportedJobs.includes(this.dataManager.classJob));
+        return getRegisteredSimSpecs().filter(simSpec => simSpec.supportedJobs === undefined ? true : simSpec.supportedJobs.includes(this.dataManager.primaryClassJob));
     }
 
+    /**
+     * Get the currently-selected race's stats.
+     */
     get raceStats() {
         return getRaceStats(this._race);
     }
 
+    /**
+     * Get the currently-selected race.
+     */
     get race() {
         return this._race;
     }
@@ -787,32 +1070,53 @@ export class GearPlanSheet {
         this.recalcAll();
     }
 
+    /**
+     * Get all sets on this sheet.
+     */
     get sets(): CharacterGearSet[] {
         return this._sets;
     }
 
+    /**
+     * Get all sims on this sheet.
+     */
     get sims(): Simulation<any, any, any>[] {
         return this._sims;
     }
 
+    /**
+     * Add a sim to this sheet.
+     *
+     * @param sim
+     */
     addSim(sim: Simulation<any, any, any>) {
         this._sims.push(sim);
         this.saveData();
     }
 
+    /**
+     * Delete a sim from this sheet.
+     *
+     * @param sim
+     */
     delSim(sim: Simulation<any, any, any>) {
         this._sims = this._sims.filter(s => s !== sim);
         this.saveData();
     }
 
-    get relevantFood(): FoodItem[] {
-        return [...this._dmRelevantFood, ...this._customFoods];
-    }
-
+    /**
+     * Get materia which are relevant to this sheet.
+     */
     get relevantMateria(): Materia[] {
         return this._relevantMateria;
     }
 
+    /**
+     * Get materia which are relevant within a specific slot. On top of needing to be class-relevant, it must fit
+     * in the slot.
+     *
+     * @param slot
+     */
     getRelevantMateriaFor(slot: MeldableMateriaSlot) {
         const materia = this._relevantMateria.filter(mat => mat.ilvl <= slot.materiaSlot.ilvl);
         // Sort materia from highest to lowest
@@ -836,6 +1140,9 @@ export class GearPlanSheet {
         return materia.filter(mat => mat.materiaGrade >= minDisplayGrade);
     }
 
+    /**
+     * Get the current party bonus amount.
+     */
     get partyBonus(): PartyBonusAmount {
         return this._partyBonus;
     }
@@ -845,28 +1152,54 @@ export class GearPlanSheet {
         this.recalcAll();
     }
 
+    /**
+     * Get all items which are relevant, and are not filtered out by display settings. Custom items are always displayed
+     * regardless of filtering.
+     */
     get itemsForDisplay(): GearItem[] {
+        const settings = this._itemDisplaySettings;
         return [
             ...this.dataManager.allItems.filter(item => {
-                return item.ilvl >= this._itemDisplaySettings.minILvl
-                    && (item.ilvl <= this._itemDisplaySettings.maxILvl
-                        || item.isCustomRelic && this._itemDisplaySettings.higherRelics);
+                return item.ilvl >= settings.minILvl
+                    && (item.ilvl <= settings.maxILvl
+                        || item.isCustomRelic && settings.higherRelics)
+                    && (!item.isNqVersion || settings.showNq);
             }),
             ...this._customItems];
     }
 
-    onGearDisplaySettingsUpdate() {
+    /**
+     * Overridable hook for when gear display settings are updated.
+     */
+    gearDisplaySettingsUpdateLater() {
 
     }
 
+    gearDisplaySettingsUpdateNow() {
+
+    }
+
+    /**
+     * The item display settings. Uses a proxy which automatically calls {@link #gearDisplaySettingsUpdateLater} after
+     * any fields are modified.
+     */
     get itemDisplaySettings(): ItemDisplaySettings {
-        return writeProxy(this._itemDisplaySettings, () => this.onGearDisplaySettingsUpdate());
+        return writeProxy(this._itemDisplaySettings, () => this.gearDisplaySettingsUpdateLater());
     }
 
+    /**
+     * Food items which are relevant and pass the filter. Custom foods will be displayed regardless of filtering.
+     */
     get foodItemsForDisplay(): FoodItem[] {
         return [...this._dmRelevantFood.filter(item => item.ilvl >= this._itemDisplaySettings.minILvlFood && item.ilvl <= this._itemDisplaySettings.maxILvlFood), ...this._customFoods];
     }
 
+    /**
+     * Get the best possible materia for a particular slot of the given stat.
+     *
+     * @param stat
+     * @param meldSlot
+     */
     getBestMateria(stat: MateriaSubstat, meldSlot: MeldableMateriaSlot): Materia | undefined {
         const materiaFilter = (materia: Materia) => {
             return isMateriaAllowed(materia, meldSlot.materiaSlot) && materia.primaryStat === stat;
@@ -875,10 +1208,18 @@ export class GearPlanSheet {
         return sortedOptions.length >= 1 ? sortedOptions[0] : undefined;
     }
 
+    /**
+     * Retrieve a particular materia by its item ID. Returns undefined if the materia does not exist.
+     *
+     * @param materiaId
+     */
     getMateriaById(materiaId: number): Materia | undefined {
         return this.dataManager.materiaById(materiaId);
     }
 
+    /**
+     * Add any sims which are considered to be "default" sims for this class and level.
+     */
     addDefaultSims() {
         const sims = getDefaultSims(this.classJobName, this.level);
         for (const simSpec of sims) {
@@ -891,6 +1232,11 @@ export class GearPlanSheet {
         }
     }
 
+    /**
+     * Recompute custom item stats, and force a recalc of sets.
+     *
+     * This should be called after custom items are modified.
+     */
     recheckCustomItems() {
         for (const customItem of this._customItems) {
             customItem.recheckStats();
@@ -919,5 +1265,43 @@ export class GearPlanSheet {
                 // Only allow items up to current max level for this job
                 && otherItem.equipLvl <= this.classJobStats.maxLevel;
         });
+    }
+
+    /**
+     * Get the consolidated level/ilevel sync info.
+     */
+    get syncInfo(): SyncInfo {
+        const levelSync = this.level === CURRENT_MAX_LEVEL ? null : this.level;
+        const explicitIlvlSync = this.ilvlSync ?? null;
+        if (explicitIlvlSync !== null) {
+            // Explicit ilvl sync
+            return {
+                lvlSync: levelSync,
+                ilvlSync: explicitIlvlSync,
+                ilvlSyncIsExplicit: true,
+            };
+        }
+        else {
+            if (levelSync !== null) {
+                // Implicit ilvl sync
+                return {
+                    lvlSync: levelSync,
+                    ilvlSync: this.dataManager.getImplicitIlvlSync(levelSync, true),
+                    ilvlSyncIsExplicit: false,
+                };
+            }
+            else {
+                return {
+                    lvlSync: levelSync,
+                    ilvlSync: null,
+                    ilvlSyncIsExplicit: null,
+                };
+            }
+        }
+    }
+
+
+    get timestamp(): Date {
+        return this._timestamp;
     }
 }

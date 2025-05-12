@@ -1,6 +1,6 @@
-import { Fugetsu, Fuka, MeikyoShisuiBuff } from "./sam_buffs";
+import {Fugetsu, Fuka, MeikyoShisuiBuff} from "./sam_buffs";
 import SAMGauge from "./sam_gauge";
-import { KenkiAbility, SamGcdAbility, SamOgcdAbility } from "./sam_types";
+import {KenkiAbility, SamGcdAbility, SamOgcdAbility} from "./sam_types";
 
 /**
  * GCD Actions
@@ -10,7 +10,7 @@ export const Gyofu: SamGcdAbility = {
     name: "Gyofu",
     id: 36963,
     attackType: "Weaponskill",
-    potency: 230,
+    potency: 240,
     gcd: 2.5,
     cast: 0,
     updateGauge: (gauge: SAMGauge) => {
@@ -119,7 +119,7 @@ export const TendoSetsugekka: SamGcdAbility = {
     name: "Tendo Setsugekka",
     id: 36966,
     attackType: "Weaponskill",
-    potency: 1020,
+    potency: 1100,
     autoCrit: true,
     gcd: 2.5,
     cast: 1.3,
@@ -134,7 +134,7 @@ export const TendoKaeshiSetsugekka: SamGcdAbility = {
     name: "Tendo Kaeshi Setsugekka",
     id: 36968,
     attackType: "Weaponskill",
-    potency: 1020,
+    potency: 1100,
     autoCrit: true,
     gcd: 2.5,
     cast: 0,
@@ -164,7 +164,7 @@ export const OgiNamikiri: SamGcdAbility = {
     name: "Ogi Namikiri",
     id: 25781,
     attackType: "Weaponskill",
-    potency: 900,
+    potency: 1000,
     autoCrit: true,
     gcd: 2.5,
     cast: 1.3,
@@ -176,7 +176,7 @@ export const KaeshiNamikiri: SamGcdAbility = {
     name: "Kaeshi: Namikiri",
     id: 25782,
     attackType: "Weaponskill",
-    potency: 900,
+    potency: 1000,
     autoCrit: true,
     gcd: 2.5,
     cast: 0,
@@ -211,7 +211,7 @@ export const Zanshin: KenkiAbility = {
     name: "Zanshin",
     id: 36964,
     attackType: "Ability",
-    potency: 820,
+    potency: 940,
     updateGauge: gauge => gauge.kenkiGauge -= 50,
     kenkiCost: 50,
 };
@@ -246,7 +246,7 @@ export const HissatsuGyoten: KenkiAbility = {
     attackType: "Ability",
     potency: 100,
     cooldown: {
-        time: 10,
+        time: 5,
     },
     updateGauge: gauge => gauge.kenkiGauge -= 10,
     kenkiCost: 10,

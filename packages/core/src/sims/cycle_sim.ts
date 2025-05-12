@@ -28,10 +28,26 @@ import {
 import {CooldownMode, CooldownTracker} from "./common/cooldown_manager";
 import {addValues, fixedValue, multiplyFixed, multiplyIndependent, ValueWithDev} from "@xivgear/xivmath/deviation";
 import {abilityEquals, animationLock, appDelay, completeComboData, FinalizedComboData} from "./ability_helpers";
-import {abilityToDamageNew, combineBuffEffects} from "./sim_utils";
+import {abilityToDamageNew, combineBuffEffects, noBuffEffects} from "./sim_utils";
 import {BuffSettingsExport} from "./common/party_comp_settings";
 import {CycleSettings} from "./cycle_settings";
 import {buffRelevantAtSnapshot, buffRelevantAtStart} from "./buff_helpers";
+
+/**
+ * Represents the "zero" CombinedBuffEffect object, which represents not having any offensive buffs.
+ * This should not be modified in place.
+ */
+const NO_BUFF_EFFECTS = noBuffEffects();
+
+const NO_BUFFS: CombinedBuffsAndEffects = {
+    'buffs': [],
+    'combinedEffects': NO_BUFF_EFFECTS,
+};
+
+type CombinedBuffsAndEffects = {
+        buffs: Buff[],
+        combinedEffects: CombinedBuffEffect,
+    }
 
 /**
  * CycleContext is similar to CycleProcessor, but is scoped to within a cycle. It provides methods
@@ -209,7 +225,6 @@ export class CycleContext {
 export type AbilityUseResult = 'full' | 'partial' | 'none';
 
 
-
 /* TODO: I thought of a better way to implement this.
 
     This can all be implemented post-hoc.
@@ -277,6 +292,11 @@ export type MultiCycleSettings = {
      * How to deal with GCDs not lining up perfectly with the end of fight.
      */
     readonly cutoffMode: CutoffMode;
+    /**
+     * Enables simple mode - don't record any information that would purely be used for visuals on the report.
+     * The final DPS number is the only thing that matters.
+     */
+    readonly simpleMode?: boolean;
 }
 
 export type CycleFunction = (cycle: CycleContext) => void
@@ -473,6 +493,8 @@ export class CycleProcessor {
      */
     private _rowCount = 0;
 
+    private readonly _simple: boolean;
+
     constructor(private settings: MultiCycleSettings) {
         this.cdTracker = new CooldownTracker(() => this.currentTime);
         this._cdEnforcementMode = 'warn';
@@ -492,6 +514,7 @@ export class CycleProcessor {
             potency: this.stats.jobStats.aaPotency,
         };
         this.cutoffMode = settings.cutoffMode;
+        this._simple = settings.simpleMode ?? false;
     }
 
     get cdEnforcementMode(): CooldownMode {
@@ -560,7 +583,7 @@ export class CycleProcessor {
      * Modifies the stack value for a given buff. The stack value provided should be the modified amount and not the final amount
      *
      * @param buff The Buff
-     * @param stacks The stack modification to add
+     * @param stacksDelta +/- change in stacks
      */
     modifyBuffStacks(buff: Buff, stacksDelta: number) {
         const activeUsages = this.getActiveBuffsData().filter(buffHist => buffHist.buff.name === buff.name);
@@ -822,8 +845,10 @@ export class CycleProcessor {
                     totalDamage: totalDamage.expected,
                     totalDamageFull: totalDamage,
                     totalPotency: totalPotency,
+                    // buffs: this._simple ? [] : record.buffs,
                     buffs: record.buffs,
                     combinedEffects: record.combinedEffects,
+                    // ability: this._simple ? null : record.ability,
                     ability: record.ability,
                 } satisfies FinalizedAbility;
             }
@@ -837,8 +862,8 @@ export class CycleProcessor {
         switch (this.cutoffMode) {
             case "prorate-gcd":
             case "prorate-application":
-            // For these, we use either the current time, or the total allowed time. Pro-rating the final GCD is
-            // handled in `get finalizedRecords()`
+                // For these, we use either the current time, or the total allowed time. Pro-rating the final GCD is
+                // handled in `get finalizedRecords()`
                 return Math.min(this.totalTime, this.currentTime);
             case "lax-gcd":
                 return this.nextGcdTime;
@@ -866,14 +891,15 @@ export class CycleProcessor {
         return ability.type === 'gcd';
     }
 
-    private getCombinedEffectsFor(ability: Ability, time = this.currentTime): {
-        buffs: ReturnType<typeof this.getActiveBuffs>,
-        combinedEffects: ReturnType<typeof combineBuffEffects>,
-    } {
-        const active = this.getActiveBuffsFor(ability, time);
-        const combined = combineBuffEffects(active);
+    private getCombinedEffectsFor(ability: Ability, time = this.currentTime): CombinedBuffsAndEffects {
+        const active: Buff[] = this.getActiveBuffsFor(ability, time);
+        if (active.length === 0) {
+            return NO_BUFFS;
+        }
+        const combined: CombinedBuffEffect = combineBuffEffects(active);
         return {
             'buffs': active,
+            // 'buffs': this._simple ? [] : active,
             'combinedEffects': combined,
         };
     }
@@ -899,10 +925,10 @@ export class CycleProcessor {
         }
         // If there's multiple, pick the one with the highest min level.
         const modification = relevantModifications.reduce((currentLowest, mod) => currentLowest.minLevel > mod.minLevel ? currentLowest : mod);
-        const modifiedAbility = {
+        const modifiedAbility: Ability = {
             ...ability,
             ...modification,
-            minLevel: undefined,
+            levelModifiers: [],
         };
         return modifiedAbility;
     }
@@ -946,7 +972,7 @@ export class CycleProcessor {
             switch (this.cdEnforcementMode) {
                 case "none":
                 case "warn":
-                // CD tracker will enforce this
+                    // CD tracker will enforce this
                     break;
                 case "delay":
                     this.advanceTo(this.cdTracker.statusOf(ability).readyAt.absolute);
@@ -1005,7 +1031,7 @@ export class CycleProcessor {
         const dmgInfo = this.modifyDamage(abilityToDamageNew(this.stats, ability, combinedEffects), ability, buffs);
         const appDelayFromSnapshot = appDelay(ability);
         const appDelayFromStart = appDelayFromSnapshot + snapshotDelayFromStart;
-        const finalBuffs: Buff[] = Array.from(new Set<Buff>([
+        const finalBuffs: Buff[] = this._simple ? [] : Array.from(new Set<Buff>([
             ...preBuffs,
             ...buffs]))
             .filter(buff => {
@@ -1096,6 +1122,34 @@ export class CycleProcessor {
         const readyAt = this.cdTracker.statusOf(action).readyAt.absolute;
         const maxDelayAt = this.nextGcdTime - animationLock(action);
         return readyAt <= Math.min(maxDelayAt, this.totalTime);
+    }
+
+    /**
+     * Determines whether or not a list of Off-GCD abilities can be used without clipping the GCD
+     *
+     * @param ogcds The Off-GCD abilitiesto check for
+     * @returns whether or not the abilities can be used in sequence without clipping the GCD
+     */
+    canUseOgcdsWithoutClipping(ogcds: OgcdAbility[]) {
+        const currentTime = this.currentTime;
+
+        let timeAfterOgcds = currentTime;
+        for (const ogcd of ogcds) {
+            // Time until oGCD is off CD
+            const waitTime = this.cdTracker.statusOfAt(ogcd, timeAfterOgcds).readyAt.relative;
+            // Wait for it to be off CD
+            timeAfterOgcds += waitTime;
+            // Lock or cast time
+            const lockTime = this.castTime(ogcd, this.getCombinedEffectsFor(ogcd, timeAfterOgcds).combinedEffects);
+            timeAfterOgcds += lockTime;
+            if (currentTime > timeAfterOgcds) {
+                return false;
+            }
+            else if (timeAfterOgcds > this.totalTime) {
+                return false;
+            }
+        }
+        return timeAfterOgcds <= this.nextGcdTime;
     }
 
     // Counter that makes this fail on purpose if buggy sim rotation code gets into an infinite loop
@@ -1281,8 +1335,8 @@ export class CycleProcessor {
             this.combatStarted = true;
             this.combatStarting = true;
         }
-        if (usedAbility.dot) {
-            const dotId = usedAbility.ability['dot']?.id;
+        if (usedAbility.dot && 'dot' in usedAbility.ability) {
+            const dotId = usedAbility.ability.dot?.id;
             // If the ability places a DoT, then check if we need to cut off an existing DoT
             if (dotId !== undefined) {
                 const existing = this.dotMap.get(dotId);
@@ -1569,6 +1623,7 @@ export class CycleProcessor {
         return ability;
     }
 
+    // TODO: this should not look at buffs directly. It should only be concerned with CombinedBuffEffects
     private modifyDamage(originalDamage: DamageResult, ability: Ability, buffs: Buff[]): DamageResult {
         let damage: DamageResult = originalDamage;
         for (const buff of buffs) {
@@ -1709,7 +1764,7 @@ function updateComboTracker(combo: ComboData, ability: Ability, tracker: ComboTr
             tracker.lastComboAbility = null;
             break;
         case "nobreak":
-        // Do nothing
+            // Do nothing
             break;
     }
     return out;

@@ -1,9 +1,14 @@
 import {LoadingBlocker} from "@xivgear/common-ui/components/loader";
 
-import {setTitle} from "./base_ui";
+import {setTitle, showFatalError} from "./base_ui";
 import {GearPlanSheetGui} from "./components/sheet";
+import {recordError, recordEvent} from "@xivgear/common-ui/analytics/analytics";
 
 let embedDiv: HTMLDivElement;
+
+export function getEmbedDiv(): HTMLDivElement | undefined {
+    return embedDiv;
+}
 
 export function earlyEmbedInit() {
     console.log("Embed early init");
@@ -21,6 +26,7 @@ export function earlyEmbedInit() {
 }
 
 export async function openEmbed(sheet: GearPlanSheetGui) {
+    recordEvent('openEmbed');
     console.log("openEmbed start");
     sheet.isEmbed = true;
     try {
@@ -28,6 +34,7 @@ export async function openEmbed(sheet: GearPlanSheetGui) {
         console.log("openEmbed mid");
         const editorArea = sheet.editorArea;
         // TODO: this is bad
+        // @ts-expect-error i know it's bad
         const statTotals = sheet.editorArea.firstChild['toolbar'].firstChild;
 
         const placeHolder = editorArea.querySelector("a#embed-stats-placeholder");
@@ -38,14 +45,8 @@ export async function openEmbed(sheet: GearPlanSheetGui) {
         setTitle('Embed');
     }
     catch (e) {
+        recordError('openEmbed', e);
         console.error("Error loading embed", e);
-        displayEmbedError();
+        showFatalError("Error loading embed");
     }
-}
-
-export function displayEmbedError(reason?: string) {
-    setTitle("Error");
-    const text = document.createElement('p');
-    text.textContent = "Embed failed to load. " + (reason ?? "Make sure the link points to a set (not a full sheet).");
-    embedDiv.replaceChildren(text);
 }

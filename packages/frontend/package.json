@@ -6,6 +6,7 @@
     "@webcomponents/webcomponentsjs": "^2.8.0",
     "@xivgear/common-ui": "^1.0.0",
     "@xivgear/core": "^1.0.0",
+    "@xivgear/util": "^1.0.0",
     "@xivgear/xivmath": "^1.0.0"
   },
   "exports": {
@@ -32,13 +33,10 @@
   },
   "scripts": {
     "build": "tsc --build && lessc --source-map ./src/style.less dist/style.css && webpack --mode=development",
-    "buildprod": "tsc --build && webpack --mode=development && lessc --source-map ./src/style.less dist/style.css",
+    "buildprod": "tsc --build && lessc --source-map ./src/style.less dist/style.css && webpack --mode=production",
     "web": "webpack --mode=development",
     "webprod": "webpack --mode=production",
     "less": "lessc --source-map ./src/style.less dist/style.css",
     "test": "ts-mocha --parallel=true src/scripts/test/**/*test.ts src/scripts/test/**/*tests.ts"
-  },
-  "browser": {
-    "[module-name]": false
   }
 }

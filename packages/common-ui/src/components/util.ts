@@ -29,7 +29,7 @@ export class OptionDataElement<X> extends HTMLOptionElement {
 }
 
 export class DataSelect<X> extends HTMLSelectElement {
-    constructor(items: X[], textGetter: (item: X) => string, callback: ((newValue: X) => void) | undefined, initialSelectedItem: typeof items[number] = undefined) {
+    constructor(items: X[], textGetter: (item: X) => string, callback: ((newValue: X) => void) | undefined, initialSelectedItem: (typeof items[number] | undefined) = undefined) {
         super();
         for (const item of items) {
             const opt = new OptionDataElement(item);
@@ -54,11 +54,15 @@ export class DataSelect<X> extends HTMLSelectElement {
 
 let idCounter = 1;
 
+export function randomId(prefix: string = 'unique-id-') : string{
+    return prefix + (idCounter++);
+}
+
 export function labelFor(label: string, labelFor: HTMLElement) {
     const element = document.createElement("label");
     element.textContent = label;
     if (!labelFor.id) {
-        labelFor.id = 'lbl-id-' + idCounter++;
+        labelFor.id = randomId('lbl-id-');
     }
     element.htmlFor = labelFor.id;
     return element;
@@ -121,9 +125,9 @@ export class FieldBoundCheckBox<ObjType> extends HTMLInputElement {
 }
 
 export interface ValidationContext<ObjType> {
-    ignoreChange();
+    ignoreChange(): void;
 
-    failValidation(message: string);
+    failValidation(message: string): void;
 
     get obj(): ObjType;
 }
@@ -167,9 +171,22 @@ export interface FbctArgs<ObjType, FieldType> {
      */
     type?: string;
     /**
-     * The HTML input inputmode.
+     * The HTML input inputmode. Common values include 'decimal', 'email', 'none', 'numeric', 'search', 'tel', 'text',
+     * and 'url'.
      */
     inputMode?: string;
+    /**
+     * Sets the pattern attribute
+     */
+    pattern?: string;
+}
+
+export interface FieldBoundFloatFieldFbctArgs<ObjType, FieldType> extends FbctArgs<ObjType, FieldType> {
+    /**
+     * Optionally, how many decimal places to fix the float to. You can use 2 to make GCD speeds (i.e. 2.50)
+     * show up as 2.50 instead of 2.5.
+     */
+    fixDecimals?: number;
 }
 
 export class FieldBoundConvertingTextField<ObjType, FieldType> extends HTMLInputElement {
@@ -187,6 +204,9 @@ export class FieldBoundConvertingTextField<ObjType, FieldType> extends HTMLInput
         if (extraArgs.inputMode) {
             this.inputMode = extraArgs.inputMode;
         }
+        if (extraArgs.pattern) {
+            this.pattern = extraArgs.pattern;
+        }
         // @ts-expect-error - not sure how to do type def correctly
         this.reloadValue = () => this.value = valueToString(obj[field]);
         this.reloadValue();
@@ -200,7 +220,7 @@ export class FieldBoundConvertingTextField<ObjType, FieldType> extends HTMLInput
             try {
                 const newRawValue = this.value;
                 let _stop = false;
-                const fail = (msg) => {
+                const fail = (msg: string) => {
                     _stop = true;
                     this._validationMessage = msg;
                 };
@@ -262,7 +282,7 @@ export class FieldBoundConvertingTextField<ObjType, FieldType> extends HTMLInput
                 }
             }
             catch (e) {
-                this._validationMessage = e.toString();
+                this._validationMessage = String(e);
                 return;
             }
         };
@@ -335,26 +355,55 @@ export class FieldBoundConvertingTextField2<ObjType, Field extends keyof ObjType
     }
 }
 
-const skipMinus = (ctx: PreValidationContext<never>) => {
+const skipMinus = (ctx: PreValidationContext<unknown>) => {
     if (ctx.newRawValue === '-') {
         ctx.ignoreChange();
     }
 };
 
-// new FieldBoundConvertingTextField(new CharacterGearSet(null), 'food', food => food.toString(), str => new XivApiFoodInfo({}));
+
 export class FieldBoundIntField<ObjType> extends FieldBoundConvertingTextField<ObjType, number> {
     constructor(obj: ObjType, field: { [K in keyof ObjType]: ObjType[K] extends number ? K : never }[keyof ObjType], extraArgs: FbctArgs<ObjType, number> = {}) {
-        const intValidator = (ctx) => {
+        const intValidator: Exclude<typeof extraArgs.postValidators, undefined>[number] = (ctx) => {
             if (ctx.newValue % 1 !== 0) {
                 ctx.failValidation('Value must be an integer');
             }
         };
         extraArgs.preValidators = [skipMinus, ...(extraArgs.preValidators ?? [])];
         extraArgs.postValidators = [intValidator, ...(extraArgs.postValidators ?? [])];
+        const defaultSettings: Partial<FbctArgs<ObjType, number>> = {
+            pattern: "\\d*",
+            inputMode: 'number',
+        };
         // Spinner arrows aren't styleable. Love CSS!
         // extraArgs.type = extraArgs.type ?? 'number';
         // extraArgs.inputMode = extraArgs.inputMode ?? 'numeric';
-        super(obj, field, (s) => s.toString(), (s) => Number(s), extraArgs);
+        super(obj, field, (s) => s.toString(), (s) => Number(s), {...defaultSettings, ...extraArgs});
+        if (this.type === 'numeric') {
+            if (!this.step) {
+                this.step = '1';
+            }
+        }
+    }
+}
+
+export class FieldBoundOrUndefIntField<ObjType> extends FieldBoundConvertingTextField<ObjType, number | undefined> {
+    constructor(obj: ObjType, field: { [K in keyof ObjType]: ObjType[K] extends (number | undefined) ? K : never }[keyof ObjType], extraArgs: FbctArgs<ObjType, number | undefined> = {}) {
+        const intValidator: Exclude<typeof extraArgs.postValidators, undefined>[number] = (ctx) => {
+            if (ctx.newValue !== undefined && ctx.newValue % 1 !== 0) {
+                ctx.failValidation('Value must be an integer');
+            }
+        };
+        extraArgs.preValidators = [skipMinus, ...(extraArgs.preValidators ?? [])];
+        extraArgs.postValidators = [intValidator, ...(extraArgs.postValidators ?? [])];
+        const defaultSettings: Partial<FbctArgs<ObjType, number | undefined>> = {
+            pattern: "\\d*",
+            inputMode: 'number',
+        };
+        // Spinner arrows aren't styleable. Love CSS!
+        // extraArgs.type = extraArgs.type ?? 'number';
+        // extraArgs.inputMode = extraArgs.inputMode ?? 'numeric';
+        super(obj, field, (s) => s === undefined ? "" : s.toString(), (s) => s.trim() === "" ? undefined : Number(s), {...extraArgs, ...defaultSettings});
         if (this.type === 'numeric') {
             if (!this.step) {
                 this.step = '1';
@@ -364,8 +413,8 @@ export class FieldBoundIntField<ObjType> extends FieldBoundConvertingTextField<O
 }
 
 export class FieldBoundFloatField<ObjType> extends FieldBoundConvertingTextField<ObjType, number> {
-    constructor(obj: ObjType, field: { [K in keyof ObjType]: ObjType[K] extends number ? K : never }[keyof ObjType], extraArgs: FbctArgs<ObjType, number> = {}) {
-        const numberValidator = (ctx) => {
+    constructor(obj: ObjType, field: { [K in keyof ObjType]: ObjType[K] extends number ? K : never }[keyof ObjType], extraArgs: FieldBoundFloatFieldFbctArgs<ObjType, number> = {}) {
+        const numberValidator: Exclude<typeof extraArgs.postValidators, undefined>[number] = (ctx) => {
             // filter out NaNs and other garbage values
             // noinspection PointlessArithmeticExpressionJS
             if (ctx.newValue * 0 !== 0) {
@@ -374,10 +423,18 @@ export class FieldBoundFloatField<ObjType> extends FieldBoundConvertingTextField
         };
         extraArgs.preValidators = [skipMinus, ...(extraArgs.preValidators ?? [])];
         extraArgs.postValidators = [numberValidator, ...(extraArgs.postValidators ?? [])];
+        const defaultSettings: Partial<FbctArgs<ObjType, number | undefined>> = {
+            // pattern: "\\d*",
+            inputMode: 'decimal',
+        };
         // Spinner arrows aren't styleable. Love CSS!
         // extraArgs.type = extraArgs.type ?? 'number';
         // extraArgs.inputMode = extraArgs.inputMode ?? 'numeric';
-        super(obj, field, (s) => s.toString(), (s) => Number(s), extraArgs);
+        const toStringFunc = extraArgs.fixDecimals ? (x: number) => x.toFixed(extraArgs.fixDecimals) : (x: number) => x.toString();
+        if (extraArgs.fixDecimals !== undefined) {
+            defaultSettings.pattern = `[0-9]*\\.?[0-9]{0,${extraArgs.fixDecimals}}`;
+        }
+        super(obj, field, (s) => toStringFunc(s), (s) => Number(s), {...defaultSettings, ...extraArgs});
     }
 }
 
@@ -387,8 +444,31 @@ export const nonNegative = (ctx: PostValidationContext<never, number>) => {
     }
 };
 
-export function clampValues(min: number | undefined, max: number | undefined): (ctx: PostValidationContext<never, number>) => void {
-    return (ctx: PostValidationContext<never, number>) => {
+export function clampValuesOrUndef<Ignored>(min: number | undefined, max: number | undefined): (ctx: PostValidationContext<Ignored, number | undefined>) => void {
+    return (ctx: PostValidationContext<Ignored, number | undefined>) => {
+        if (ctx.newValue === undefined) {
+            return;
+        }
+        if (min !== undefined && max !== undefined) {
+            if (ctx.newValue < min || ctx.newValue > max) {
+                ctx.failValidation(`Value must be between ${min} and ${max}`);
+            }
+        }
+        else if (min !== undefined) {
+            if (ctx.newValue < min) {
+                ctx.failValidation(`Value must be great than or equal to ${min}`);
+            }
+        }
+        else if (max !== undefined) {
+            if (ctx.newValue > max) {
+                ctx.failValidation(`Value must be less than or equal to ${max}`);
+            }
+        }
+    };
+}
+
+export function clampValues<Ignored>(min: number | undefined, max: number | undefined): (ctx: PostValidationContext<Ignored, number>) => void {
+    return (ctx: PostValidationContext<Ignored, number>) => {
         if (min !== undefined && max !== undefined) {
             if (ctx.newValue < min || ctx.newValue > max) {
                 ctx.failValidation(`Value must be between ${min} and ${max}`);
@@ -420,7 +500,6 @@ export class FieldBoundTextField<ObjType> extends FieldBoundConvertingTextField<
 // }
 export class FieldBoundDataSelect<ObjType, DataType> extends DataSelect<DataType> {
 
-    reloadValue: () => void;
     listeners: ((value: DataType) => void)[] = [];
 
     constructor(obj: ObjType, field: { [K in keyof ObjType]: ObjType[K] extends DataType ? K : never }[keyof ObjType], valueDisplayName: (value: DataType) => string, options: DataType[]) {
@@ -470,8 +549,12 @@ export function labeledRadioButton(label: string, radioButton: HTMLInputElement)
 
 export function quickElement<X extends keyof HTMLElementTagNameMap>(tag: X, classes: string[], nodes: Parameters<ParentNode['replaceChildren']>): HTMLElementTagNameMap[X] {
     const element = document.createElement(tag);
-    element.replaceChildren(...nodes);
-    element.classList.add(...classes);
+    if (nodes.length > 0) {
+        element.replaceChildren(...nodes);
+    }
+    if (classes.length > 0) {
+        element.classList.add(...classes);
+    }
     return element;
 }
 
@@ -633,6 +716,7 @@ customElements.define("data-select", DataSelect, {extends: "select"});
 customElements.define("field-bound-converting-text-field", FieldBoundConvertingTextField, {extends: "input"});
 customElements.define("field-bound-text-field", FieldBoundTextField, {extends: "input"});
 customElements.define("field-bound-float-field", FieldBoundFloatField, {extends: "input"});
+customElements.define("field-bound-int-or-undef-field", FieldBoundOrUndefIntField, {extends: "input"});
 customElements.define("field-bound-int-field", FieldBoundIntField, {extends: "input"});
 customElements.define("field-bound-checkbox", FieldBoundCheckBox, {extends: "input"});
 customElements.define("field-bound-data-select", FieldBoundDataSelect, {extends: "select"});
